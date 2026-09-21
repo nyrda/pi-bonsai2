@@ -1,0 +1,41 @@
+{
+  "abliterated-mtp": {
+    "repo": "BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-PQ2_0-MTP-GGUF",
+    "revision": "f6c0aa5b6b5179039f1ef12eb84d361d468bbc73",
+    "label": "Bonsai 2 Abliterated MTP (BoldingBuilds)",
+    "filename": "Ternary-Bonsai-2-27B-Abliterated-PQ2_0-MTP.gguf",
+    "sha256": "7aa43b9a42f5bebc170d54f45657a7ccad841dd1f5b94434b107945740b02e86",
+    "vision": true,
+    "runtime": "mtp",
+    "serverArgs": [
+      "--spec-type",
+      "draft-mtp",
+      "--spec-draft-n-max",
+      "2"
+    ]
+  },
+  "pq2": {
+    "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+    "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
+    "vision": true,
+    "label": "Bonsai 2 PQ2",
+    "filename": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+    "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1"
+  },
+  "ptq1": {
+    "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+    "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
+    "vision": true,
+    "label": "Bonsai 2 PTQ1",
+    "filename": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+    "sha256": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3"
+  },
+  "abliterated-pq2": {
+    "repo": "Hikari07jp/Ternary-Bonsai-2-27B-Abliterated-GGUF",
+    "revision": "e7f6daf95ab820ef8de7d8f5e883d95d546ab02c",
+    "label": "Bonsai 2 Abliterated PQ2 (Hikari)",
+    "filename": "Ternary-Bonsai-2-27B-Abliterated-PQ2_0.gguf",
+    "sha256": "41a362f422b70a8c2dc74a3cc14447ad0ea702c440f0dbe41dc1796da7b7e342",
+    "vision": true
+  }
+}

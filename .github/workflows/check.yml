@@ -1,0 +1,39 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Check flake and launcher behavior
+        run: nix flake check --print-build-logs
+      - name: Check formatting and Python lint
+        run: |
+          nix fmt -- --check flake.nix nix/*.nix
+          nix develop --command ruff check scripts tests
+          nix develop --command ruff format --check scripts tests
+      - name: Verify optional models stay out of the default download
+        run: |
+          nix derivation show --recursive .#pi-bonsai2 > /tmp/derivations.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/derivations.json') as f:
+              data = json.load(f)
+          paths = list(data.get('derivations', data))
+          assert any('PQ2_0-MTP.gguf.drv' in p for p in paths), 'Missing default MTP model'
+          assert any('mmproj-Q8_0.gguf.drv' in p for p in paths), 'Missing vision projector'
+          assert not any('PTQ1_0.gguf.drv' in p for p in paths), 'PTQ1 must remain opt-in'
+          assert not any('Ternary-Bonsai-2-27B-PQ2_0.gguf.drv' in p for p in paths), 'Original PQ2 must remain opt-in'
+          assert not any('Abliterated-PQ2_0.gguf.drv' in p for p in paths), 'Hikari must remain opt-in'
+          PY
