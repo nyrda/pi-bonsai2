@@ -6,8 +6,8 @@ import { createServer } from "node:http";
 // Stub inference transport; execute the real provider and speed extension.
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === "@earendil-works/pi-ai/api/openai-completions") {
-      return { url: "data:text/javascript,export const streamSimple = () => { throw Error('Unexpected inference'); };", shortCircuit: true };
+    if (specifier === "@earendil-works/pi-ai") {
+      return { url: "data:text/javascript,export const openAICompletionsApi = () => { throw Error('Unexpected inference'); };", shortCircuit: true };
     }
     return nextResolve(specifier, context);
   },

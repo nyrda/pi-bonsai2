@@ -2,12 +2,18 @@
   description = "Bonsai 2 on AMD ROCm, with a text and image capable Pi launcher";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/e8be7818e19ada32105a8af937a6a473b38167ca";
+  inputs.llm-agents.url = "github:numtide/llm-agents.nix/74b0cf1b42766e44da3cbce365a9643f84eb3d15";
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      llm-agents,
+    }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      pi = llm-agents.packages.${system}.pi;
       runtime = pkgs.callPackage ./nix/runtime.nix { };
       runtimeMtp = pkgs.callPackage ./nix/runtime-mtp.nix { };
       models = import ./nix/models.nix { inherit (pkgs) fetchurl; };
@@ -81,14 +87,13 @@
           }
           ''
             mkdir -p $out/bin $out/share/pi-bonsai2
-            ln -s ${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo/node_modules $out/share/pi-bonsai2/node_modules
             cp ${./pi/provider.ts} $out/share/pi-bonsai2/provider.ts
             cp ${./nix/variants.json} $out/share/pi-bonsai2/variants.json
             cp ${./pi/speed.ts} $out/share/pi-bonsai2/speed.ts
             substitute ${./scripts/pi-bonsai2.py} $out/bin/pi-bonsai2 \
               --replace-fail '@python@' '${pkgs.python3}/bin/python3' \
               --replace-fail '@server@' '${backend}/bin/bonsai2-server' \
-              --replace-fail '@pi@' '${pkgs.pi-coding-agent}/bin/pi' \
+              --replace-fail '@pi@' '${pi}/bin/pi' \
               --replace-fail '@registry@' '${./nix/variants.json}' \
               --replace-fail '@extension@' "$out/share/pi-bonsai2/provider.ts"
             chmod +x $out/bin/pi-bonsai2

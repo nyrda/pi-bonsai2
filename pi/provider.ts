@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { request } from "node:http";
-import { streamSimple as streamCompletions } from "@earendil-works/pi-ai/api/openai-completions";
+import { openAICompletionsApi } from "@earendil-works/pi-ai";
 import generationSpeed from "./speed.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -98,7 +98,7 @@ export default function (pi: ExtensionAPI) {
     baseUrl: process.env.BONSAI_BASE_URL || "http://127.0.0.1:28743/v1",
     apiKey: process.env.BONSAI_API_KEY || "local",
     api: "openai-completions",
-    streamSimple: (model, context, options) => streamCompletions(
+    streamSimple: (model, context, options) => openAICompletionsApi().streamSimple(
       { ...model, api: "openai-completions" }, context,
       { ...options, fetch: withTimings(options?.fetch ?? globalThis.fetch) },
     ),

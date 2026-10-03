@@ -188,7 +188,8 @@ Q4 KV reduces memory use and can reduce accuracy.
 ## Pins
 
 - Nixpkgs: `e8be7818e19ada32105a8af937a6a473b38167ca`, locked in `flake.lock`.
-- Pi: 0.84.3 from that Nixpkgs revision.
+- Pi: 1.0.0 from [llm-agents.nix](https://github.com/numtide/llm-agents.nix/tree/74b0cf1b42766e44da3cbce365a9643f84eb3d15):
+  `74b0cf1b42766e44da3cbce365a9643f84eb3d15`, locked in `flake.lock`.
 - [Prism runtime](https://github.com/PrismML-Eng/llama.cpp/releases/tag/prism-b10709-9a9394a):
   `prism-b10709-9a9394a`, built with ROCm and the MTP Hadamard fix.
 - [Default MTP weights](https://huggingface.co/BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-PQ2_0-MTP-GGUF/tree/f6c0aa5b6b5179039f1ef12eb84d361d468bbc73):
