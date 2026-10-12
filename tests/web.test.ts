@@ -172,3 +172,27 @@ test("htmlToMarkdown converts fragments and leaves out hidden elements", async (
   const html = '<p>Use <code>Array&lt;string&gt;</code></p><div hidden>stale</div>';
   assert.deepEqual(await htmlToMarkdown(html, "https://x.test/"), { title: "", text: "Use `Array<string>`" });
 });
+
+test("htmlToMarkdown keeps large and headerless tables as Markdown tables", async () => {
+  const rows = Array.from({ length: 3000 }, (_, i) => `<tr><td>row ${i}</td><td>${"x".repeat(20)}</td></tr>`).join("");
+  const { text } = await htmlToMarkdown(`<table><tr><th>name</th><th>value</th></tr>${rows}</table>`, "https://x.test/");
+  const lines = text.split("\n");
+  assert.equal(lines.length, 3002);
+  assert.deepEqual(lines.slice(0, 3), ["| name | value |", "| --- | --- |", `| row 0 | ${"x".repeat(20)} |`]);
+  assert.equal(lines.filter(line => line.startsWith("| ---")).length, 1);
+  const headerless = await htmlToMarkdown("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>", "https://x.test/");
+  assert.equal(headerless.text, "| a | b |\n| --- | --- |\n| 1 | 2 |");
+});
+
+test("htmlToMarkdown keeps code whitespace and turns non-HTTP links into text", async () => {
+  const html = '<p>See <a href="javascript:alert(1)">this</a> and <a href="data:text/html,x">that</a>.</p>' +
+    "<pre>a\n\n\n  \nb</pre>";
+  assert.equal((await htmlToMarkdown(html, "https://x.test/")).text, "See this and that.\n\n```\na\n\n\n  \nb\n```");
+});
+
+test("htmlToMarkdown survives deeply nested markup", async () => {
+  const started = performance.now();
+  const { text } = await htmlToMarkdown("<div>".repeat(20_000) + "deep text" + "</div>".repeat(20_000), "https://x.test/");
+  assert.ok(performance.now() - started < 10_000);
+  assert.match(text, /deep text/);
+});

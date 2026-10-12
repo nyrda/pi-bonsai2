@@ -89,29 +89,110 @@ function loadLibraries() {
 // turndown's time grows with the square of an element's child count, so content is converted one
 // block at a time, and blocks larger than this are split into their children.
 const BLOCK_HTML_CHARS = 64 * 1024;
+// Splitting stops at this depth, which bounds both recursion and repeated serialization.
+const MAX_SPLIT_DEPTH = 12;
 // Conversion stops here; the model sees far less, and the rest stays in the original page.
 const MAX_MARKDOWN_CHARS = 1_000_000;
 
+const oneLine = (text: unknown) => String(text ?? "").replace(/\s+/g, " ").trim();
+
+/** turndown's table plugin needs a header row, so a table without one uses its first row. */
+function addTableHeaders(root: any) {
+  for (const table of root.querySelectorAll("table")) {
+    const row = table.querySelector("tr");
+    if (!row || row.querySelector("th")) continue;
+    for (const cell of [...row.children]) {
+      if (cell.nodeName !== "TD") continue;
+      const header = cell.ownerDocument.createElement("th");
+      header.innerHTML = cell.innerHTML;
+      cell.replaceWith(header);
+    }
+  }
+}
+
+/** A large table in chunks of rows that each repeat the header row, joined into one Markdown table. */
+function tableToMarkdown(turndown: any, table: any): string {
+  const rows = [...table.querySelectorAll("tr")].filter((row: any) => row.closest("table") === table);
+  const header = rows.shift()?.outerHTML ?? "";
+  const parts: string[] = [];
+  let chunk = "";
+  const flush = () => {
+    if (!chunk) return;
+    const markdown = turndown.turndown(`<table>${header}${chunk}</table>`).trim();
+    // Every chunk repeats the header and separator lines; keep them only once.
+    parts.push(parts.length ? markdown.split("\n").slice(2).join("\n") : markdown);
+    chunk = "";
+  };
+  for (const row of rows) {
+    chunk += row.outerHTML;
+    if (chunk.length > BLOCK_HTML_CHARS) flush();
+  }
+  flush();
+  return parts.join("\n");
+}
+
+/** Drop whitespace-only lines and runs of blank lines that turndown leaves, except inside code fences. */
+function tidy(markdown: string): string {
+  const lines: string[] = [];
+  let fence = "";
+  for (const line of markdown.split("\n")) {
+    const marker = /^(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.slice(marker.length).trim()) fence = "";
+      lines.push(line);
+    } else if (marker) {
+      fence = marker;
+      lines.push(line);
+    } else if (line.trim() || lines.at(-1)?.trim()) {
+      lines.push(line.trim() ? line : "");
+    }
+  }
+  return lines.join("\n").trim();
+}
+
 function blocksToMarkdown(turndown: any, root: any): { markdown: string; complete: boolean } {
+  addTableHeaders(root);
   const parts: string[] = [];
   let size = 0;
-  const visit = (node: any) => {
+  const convert = (node: any) => {
+    try {
+      if (node.nodeType === 3) return oneLine(node.textContent);
+      if (node.nodeType !== 1) return "";
+      if (node.nodeName === "TABLE" && node.outerHTML.length > BLOCK_HTML_CHARS) return tableToMarkdown(turndown, node);
+      return turndown.turndown(node.outerHTML).trim();
+    } catch {
+      // Extremely deep markup can exhaust the stack inside the libraries; keep its text instead.
+      try { return oneLine(node.textContent); } catch { return ""; }
+    }
+  };
+  const visit = (node: any, depth: number) => {
     if (size >= MAX_MARKDOWN_CHARS) return;
-    const large = node.nodeType === 1 && node.nodeName !== "PRE" && node.outerHTML.length > BLOCK_HTML_CHARS;
-    if (large && node.children.length) {
-      for (const child of [...node.childNodes]) visit(child);
+    // Tables and code keep their structure; other large elements are converted child by child.
+    const splittable = node.nodeType === 1 && node.nodeName !== "PRE" && node.nodeName !== "TABLE" &&
+      depth < MAX_SPLIT_DEPTH && node.children.length > 0 && node.outerHTML.length > BLOCK_HTML_CHARS;
+    if (splittable) {
+      for (const child of [...node.childNodes]) visit(child, depth + 1);
       return;
     }
-    // Loose text between blocks needs no conversion.
-    const markdown = node.nodeType === 1 ? turndown.turndown(node.outerHTML).trim()
-      : node.nodeType === 3 ? node.textContent.replace(/\s+/g, " ").trim() : "";
+    const markdown = convert(node);
     if (markdown) { parts.push(markdown); size += markdown.length; }
   };
-  for (const child of [...root.childNodes]) visit(child);
-  // turndown leaves whitespace-only lines after some lists and wrappers.
-  const markdown = parts.join("\n\n").split("\n").map(line => line.trim() ? line : "").join("\n")
-    .replace(/\n{3,}/g, "\n\n");
-  return { markdown, complete: size < MAX_MARKDOWN_CHARS };
+  for (const child of [...root.childNodes]) visit(child, 0);
+  return { markdown: tidy(parts.join("\n\n")), complete: size < MAX_MARKDOWN_CHARS };
+}
+
+// Readability and turndown slow down steeply with nesting depth (2,000 levels take over 30 s in
+// Readability), and real pages stay far below this, so deeper pages are returned as plain text.
+const MAX_NESTING_DEPTH = 256;
+
+function nestedDeeperThan(root: any, limit: number): boolean {
+  const stack: [any, number][] = [[root, 0]];
+  while (stack.length) {
+    const [node, depth] = stack.pop()!;
+    if (depth > limit) return true;
+    for (const child of node.children ?? []) stack.push([child, depth + 1]);
+  }
+  return false;
 }
 
 /**
@@ -127,16 +208,25 @@ export async function htmlToMarkdown(html: string, url: string): Promise<{ title
     // linkedom does not resolve URLs, so make links and images absolute against <base> and the page URL.
     let base = url;
     try { base = new URL(document.querySelector("base[href]")?.getAttribute("href") ?? "", url).href; } catch {}
+    // Only HTTP(S) links stay links; others, such as data: or javascript:, become plain text.
     for (const link of document.querySelectorAll("a[href]")) {
-      try { link.setAttribute("href", new URL(link.getAttribute("href"), base).href); } catch {}
+      let href: URL | undefined;
+      try { href = new URL(link.getAttribute("href"), base); } catch {}
+      if (href?.protocol === "http:" || href?.protocol === "https:") link.setAttribute("href", href.href);
+      else link.removeAttribute("href");
       link.removeAttribute("title");
     }
     return document;
   };
   const document = parse();
-  const pageTitle = String(document.title ?? "").replace(/\s+/g, " ").trim();
+  const pageTitle = oneLine(document.title);
+  if (nestedDeeperThan(document.documentElement, MAX_NESTING_DEPTH)) {
+    const text = String(document.body?.textContent ?? "").replace(/[ \t\f\v\u00a0]+/g, " ");
+    return { title: clip(pageTitle, 300), text: tidy(text.split("\n").map(line => line.trim()).join("\n")) };
+  }
   // Return the article element itself rather than its serialized HTML, which would need parsing again.
-  const article = new Readability(document, { serializer: (element: any) => element }).parse();
+  let article: any;
+  try { article = new Readability(document, { serializer: (element: any) => element }).parse(); } catch {}
   let result = { markdown: "", complete: true };
   if (article?.content && article.textContent?.trim()) result = blocksToMarkdown(turndown, article.content);
   if (!result.markdown) {
@@ -147,7 +237,7 @@ export async function htmlToMarkdown(html: string, url: string): Promise<{ title
     }
     result = blocksToMarkdown(turndown, page.body);
   }
-  const title = String(article?.title || pageTitle).replace(/\s+/g, " ").trim();
+  const title = oneLine(article?.title || pageTitle);
   const note = result.complete ? "" : `\n\n[Conversion stopped after ${MAX_MARKDOWN_CHARS} characters.]`;
   return { title: clip(title, 300), text: result.markdown + note };
 }
@@ -167,7 +257,7 @@ interface SearxngResponse {
 }
 
 // Every field is clipped, so the output stays small whatever the instance returns.
-const flat = (text: unknown, limit: number) => clip(String(text ?? "").replace(/\s+/g, " ").trim(), limit);
+const flat = (text: unknown, limit: number) => clip(oneLine(text), limit);
 
 export function formatSearch(query: string, data: SearxngResponse): string {
   const lines: string[] = [];
