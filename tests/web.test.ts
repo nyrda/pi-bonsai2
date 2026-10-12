@@ -196,3 +196,24 @@ test("htmlToMarkdown survives deeply nested markup", async () => {
   assert.ok(performance.now() - started < 10_000);
   assert.match(text, /deep text/);
 });
+
+test("htmlToMarkdown splits large lists and wide tables without losing structure", async () => {
+  const items = Array.from({ length: 3000 }, (_, i) => `<li>item ${i} ${"x".repeat(30)}</li>`).join("");
+  const list = (await htmlToMarkdown(`<ol start="5">${items}</ol>`, "https://x.test/")).text.split("\n").filter(Boolean);
+  assert.equal(list.length, 3000);
+  assert.match(list[0], /^5\. +item 0 /);
+  assert.match(list[2999], /^3004\. +item 2999 /);
+  const started = performance.now();
+  const wide = await htmlToMarkdown(`<table><tr>${"<td>c</td>".repeat(20_000)}</tr></table>`, "https://x.test/");
+  assert.ok(performance.now() - started < 5000);
+  assert.equal(wide.text.split("\n").length, 2);
+  const broad = "<div>".repeat(13) + "<span>x</span> ".repeat(50_000) + "</div>".repeat(13);
+  const broadStarted = performance.now();
+  assert.match((await htmlToMarkdown(broad, "https://x.test/")).text, /^x x x/);
+  assert.ok(performance.now() - broadStarted < 10_000);
+});
+
+test("htmlToMarkdown converts a document without a body element", async () => {
+  const { text } = await htmlToMarkdown("<!doctype html><html><p>Hello <b>there</b></p></html>", "https://x.test/");
+  assert.equal(text, "Hello **there**");
+});

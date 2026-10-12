@@ -86,15 +86,14 @@ function loadLibraries() {
   return libraries;
 }
 
-// turndown's time grows with the square of an element's child count, so content is converted one
-// block at a time, and blocks larger than this are split into their children.
+// turndown's time grows with the square of an element's child count, so a larger element is
+// converted in groups of children that each stay below this size.
 const BLOCK_HTML_CHARS = 64 * 1024;
-// Splitting stops at this depth, which bounds both recursion and repeated serialization.
-const MAX_SPLIT_DEPTH = 12;
 // Conversion stops here; the model sees far less, and the rest stays in the original page.
 const MAX_MARKDOWN_CHARS = 1_000_000;
 
 const oneLine = (text: unknown) => String(text ?? "").replace(/\s+/g, " ").trim();
+const escapeHtml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
 /** turndown's table plugin needs a header row, so a table without one uses its first row. */
 function addTableHeaders(root: any) {
@@ -110,25 +109,15 @@ function addTableHeaders(root: any) {
   }
 }
 
-/** A large table in chunks of rows that each repeat the header row, joined into one Markdown table. */
-function tableToMarkdown(turndown: any, table: any): string {
-  const rows = [...table.querySelectorAll("tr")].filter((row: any) => row.closest("table") === table);
-  const header = rows.shift()?.outerHTML ?? "";
-  const parts: string[] = [];
-  let chunk = "";
-  const flush = () => {
-    if (!chunk) return;
-    const markdown = turndown.turndown(`<table>${header}${chunk}</table>`).trim();
-    // Every chunk repeats the header and separator lines; keep them only once.
-    parts.push(parts.length ? markdown.split("\n").slice(2).join("\n") : markdown);
-    chunk = "";
-  };
-  for (const row of rows) {
-    chunk += row.outerHTML;
-    if (chunk.length > BLOCK_HTML_CHARS) flush();
-  }
-  flush();
-  return parts.join("\n");
+/** A large table written directly from its cell text, which takes linear time whatever its shape. */
+function tableToMarkdown(table: any): string {
+  const rows = [...table.querySelectorAll("tr")].filter((row: any) => row.closest("table") === table)
+    .map((row: any) => [...row.children].filter((cell: any) => cell.nodeName === "TD" || cell.nodeName === "TH")
+      .map((cell: any) => oneLine(cell.textContent).replace(/\|/g, "\\|")));
+  const [header, ...body] = rows.filter(cells => cells.length);
+  if (!header) return "";
+  const line = (cells: string[]) => `| ${cells.join(" | ")} |`;
+  return [line(header), line(header.map(() => "---")), ...body.map(line)].join("\n");
 }
 
 /** Drop whitespace-only lines and runs of blank lines that turndown leaves, except inside code fences. */
@@ -151,39 +140,93 @@ function tidy(markdown: string): string {
 }
 
 function blocksToMarkdown(turndown: any, root: any): { markdown: string; complete: boolean } {
+  if (!root) return { markdown: "", complete: true };
   addTableHeaders(root);
+  // Estimate every subtree's HTML size in one pass, children before parents, so deciding where
+  // to split never serializes the same subtree twice.
+  const sizes = new Map<any, number>();
+  const order: any[] = [];
+  for (const stack = [root]; stack.length;) {
+    const node = stack.pop();
+    order.push(node);
+    for (const child of node.childNodes) stack.push(child);
+  }
+  for (let k = order.length - 1; k >= 0; k--) {
+    const node = order[k];
+    let size = node.nodeType === 3 ? node.textContent.length : 0;
+    if (node.nodeType === 1) {
+      size = 2 * node.localName.length + 5;
+      for (const name of node.getAttributeNames()) size += name.length + (node.getAttribute(name)?.length ?? 0) + 4;
+      for (const child of node.childNodes) size += sizes.get(child) ?? 0;
+    }
+    sizes.set(node, size);
+  }
   const parts: string[] = [];
-  let size = 0;
-  const convert = (node: any) => {
-    try {
-      if (node.nodeType === 3) return oneLine(node.textContent);
-      if (node.nodeType !== 1) return "";
-      if (node.nodeName === "TABLE" && node.outerHTML.length > BLOCK_HTML_CHARS) return tableToMarkdown(turndown, node);
-      return turndown.turndown(node.outerHTML).trim();
-    } catch {
-      // Extremely deep markup can exhaust the stack inside the libraries; keep its text instead.
-      try { return oneLine(node.textContent); } catch { return ""; }
-    }
+  let total = 0;
+  const emit = (markdown: string) => {
+    markdown = markdown.trim();
+    if (markdown) { parts.push(markdown); total += markdown.length; }
   };
-  const visit = (node: any, depth: number) => {
-    if (size >= MAX_MARKDOWN_CHARS) return;
-    // Tables and code keep their structure; other large elements are converted child by child.
-    const splittable = node.nodeType === 1 && node.nodeName !== "PRE" && node.nodeName !== "TABLE" &&
-      depth < MAX_SPLIT_DEPTH && node.children.length > 0 && node.outerHTML.length > BLOCK_HTML_CHARS;
-    if (splittable) {
-      for (const child of [...node.childNodes]) visit(child, depth + 1);
-      return;
-    }
-    const markdown = convert(node);
-    if (markdown) { parts.push(markdown); size += markdown.length; }
+  const convert = (html: string, node: any) => {
+    try { return turndown.turndown(html); }
+    catch { return oneLine(node.textContent); }
   };
-  for (const child of [...root.childNodes]) visit(child, 0);
-  return { markdown: tidy(parts.join("\n\n")), complete: size < MAX_MARKDOWN_CHARS };
+  // Recursion follows the nesting depth, which htmlToMarkdown keeps below MAX_NESTING_DEPTH.
+  const visit = (node: any) => {
+    if (total >= MAX_MARKDOWN_CHARS) return;
+    if (node.nodeType === 3) return emit(oneLine(node.textContent));
+    if (node.nodeType !== 1) return;
+    if ((sizes.get(node) ?? 0) <= BLOCK_HTML_CHARS || node.nodeName === "PRE" || !node.children.length) {
+      return emit(convert(node.outerHTML, node));
+    }
+    if (node.nodeName === "TABLE") return emit(tableToMarkdown(node));
+    // Convert groups of children inside a copy of this element's tag, so a list keeps its type,
+    // and an ordered list its numbering.
+    const close = `</${node.localName}>`;
+    const ordered = node.nodeName === "OL";
+    const first = ordered ? Number(node.getAttribute("start") ?? 1) || 1 : 1;
+    let items = 0; // <li> children before the current child
+    let groupStart = 0; // <li> children before the current group
+    let group = "";
+    const flush = () => {
+      if (!group) return;
+      const shell = node.cloneNode(false);
+      if (ordered) shell.setAttribute("start", String(first + groupStart));
+      emit(convert(shell.outerHTML.slice(0, -close.length) + group + close, node));
+      group = "";
+    };
+    for (const child of node.childNodes) {
+      if (total >= MAX_MARKDOWN_CHARS) return;
+      if (child.nodeType === 1 && (sizes.get(child) ?? 0) > BLOCK_HTML_CHARS) {
+        // A child too large for a group is converted on its own, without this element's context.
+        flush();
+        visit(child);
+      } else {
+        if (!group) groupStart = items;
+        group += child.nodeType === 1 ? child.outerHTML : child.nodeType === 3 ? escapeHtml(child.textContent) : "";
+        if (group.length > BLOCK_HTML_CHARS) flush();
+      }
+      if (child.nodeName === "LI") items++;
+    }
+    flush();
+  };
+  for (const child of [...root.childNodes]) visit(child);
+  return { markdown: tidy(parts.join("\n\n")), complete: total < MAX_MARKDOWN_CHARS };
 }
 
 // Readability and turndown slow down steeply with nesting depth (2,000 levels take over 30 s in
 // Readability), and real pages stay far below this, so deeper pages are returned as plain text.
 const MAX_NESTING_DEPTH = 256;
+
+/**
+ * The body, or the root element when an HTML document omits <body>. linkedom's `document.body`
+ * would create an empty body in that case, so the existing element is looked up instead.
+ */
+function contentRoot(document: any) {
+  const root = document.documentElement;
+  const body = [...(root?.children ?? [])].find((child: any) => child.nodeName === "BODY");
+  return body?.childNodes.length ? body : root;
+}
 
 function nestedDeeperThan(root: any, limit: number): boolean {
   const stack: [any, number][] = [[root, 0]];
@@ -221,7 +264,7 @@ export async function htmlToMarkdown(html: string, url: string): Promise<{ title
   const document = parse();
   const pageTitle = oneLine(document.title);
   if (nestedDeeperThan(document.documentElement, MAX_NESTING_DEPTH)) {
-    const text = String(document.body?.textContent ?? "").replace(/[ \t\f\v\u00a0]+/g, " ");
+    const text = String(contentRoot(document)?.textContent ?? "").replace(/[ \t\f\v\u00a0]+/g, " ");
     return { title: clip(pageTitle, 300), text: tidy(text.split("\n").map(line => line.trim()).join("\n")) };
   }
   // Return the article element itself rather than its serialized HTML, which would need parsing again.
@@ -235,7 +278,7 @@ export async function htmlToMarkdown(html: string, url: string): Promise<{ title
     for (const element of page.querySelectorAll("[hidden]")) {
       if (element.getAttribute("hidden").toLowerCase() !== "until-found") element.remove();
     }
-    result = blocksToMarkdown(turndown, page.body);
+    result = blocksToMarkdown(turndown, contentRoot(page));
   }
   const title = oneLine(article?.title || pageTitle);
   const note = result.complete ? "" : `\n\n[Conversion stopped after ${MAX_MARKDOWN_CHARS} characters.]`;
