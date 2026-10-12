@@ -13,8 +13,9 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
-const { default: webTools, htmlToText } = await import("../pi/web.ts");
+const { default: webTools, htmlToText, formatSearch } = await import("../pi/web.ts");
 
+const singleLine = "x".repeat(60_000);
 const longText = Array.from({ length: 4000 }, (_, i) => `line ${i} of the long page`).join("\n");
 const server = createServer((req, res) => {
   const url = new URL(req.url!, "http://localhost");
@@ -34,11 +35,14 @@ const server = createServer((req, res) => {
     res.end(`<html><head><title>Caf&eacute; &amp; Co</title><script>alert(1)</script></head><body>
       <nav><a href="/home">Home</a></nav>
       <main><h2>Menu</h2><p>Hot&nbsp;drinks &#8212; see <a href="/drinks">the list</a>.</p>
-      <ul><li>Tea</li><li>Coffee</li></ul><pre><code>x  =  1\n  y</code></pre></main>
+      <ul><li>Tea</li><li><p>Coffee</p></li></ul><pre><code>x  =  1\n  y</code></pre></main>
       <footer>Footer</footer></body></html>`);
   } else if (url.pathname === "/long") {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end(longText);
+  } else if (url.pathname === "/single-line") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end(singleLine);
   } else if (url.pathname === "/image") {
     res.writeHead(200, { "Content-Type": "image/png" });
     res.end(Buffer.alloc(16));
@@ -102,6 +106,13 @@ test("web_fetch saves long pages for reading and removes them at shutdown", asyn
   assert.equal(existsSync(path), false);
 });
 
+test("web_fetch resumes a line cut in the middle instead of skipping it", async () => {
+  const { tools } = setup({ BONSAI_WEB: undefined });
+  const result = await tools.web_fetch.execute("1", { url: `${origin}/single-line` });
+  const offset = Number(/offset (\d+)/.exec(text(result))![1]);
+  assert.equal(readFileSync(result.details.fullOutputPath, "utf8").split("\n")[offset - 1], singleLine);
+});
+
 test("web_fetch rejects non-HTTP URLs, HTTP errors, and binary content", async () => {
   const { tools } = setup({ BONSAI_WEB: undefined });
   await assert.rejects(tools.web_fetch.execute("1", { url: "file:///etc/passwd" }), /Only http/);
@@ -113,4 +124,23 @@ test("htmlToText falls back to the body and decodes numeric entities", () => {
   const { title, text } = htmlToText("<body><p>A&#x27;s</p><table><tr><td>1</td><td>2</td></tr></table></body>", "https://x.test/");
   assert.equal(title, "");
   assert.equal(text, "A's\n\n1 | 2 |");
+});
+
+test("htmlToText keeps escaped markup in inline code and link text", () => {
+  const { text } = htmlToText('<p>Use <code>Array&lt;string&gt;</code> or <a href="/t">&lt;T&gt;</a>.</p>', "https://x.test/");
+  assert.equal(text, "Use `Array<string>` or [<T>](https://x.test/t).");
+});
+
+test("htmlToText stays fast on malformed markup", () => {
+  const started = performance.now();
+  htmlToText("<p>" + "<".repeat(1_000_000) + "<script>".repeat(100_000) + "<h1><a href='".repeat(100_000), "https://x.test/");
+  assert.ok(performance.now() - started < 2000);
+});
+
+test("formatSearch clips long fields from the instance", () => {
+  const output = formatSearch("q", {
+    answers: Array(10).fill("a".repeat(5000)),
+    results: [{ title: "t".repeat(5000), url: "https://x.test/", content: "c".repeat(50_000) }],
+  });
+  assert.ok(output.length < 3000);
 });

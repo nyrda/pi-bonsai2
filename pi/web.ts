@@ -56,7 +56,7 @@ const ENTITIES: Record<string, string> = {
 };
 
 function decodeEntities(text: string): string {
-  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, name: string) => {
+  return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z][a-z0-9]{1,31});/gi, (match, name: string) => {
     if (name[0] === "#") {
       const code = name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
       return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
@@ -65,48 +65,113 @@ function decodeEntities(text: string): string {
   });
 }
 
-const stripTags = (html: string) => decodeEntities(html.replace(/<[^>]*>/g, ""));
+const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+const SKIPPED = new Set(["script", "style", "noscript", "svg", "template", "head", "nav", "aside", "footer", "form",
+  "iframe", "button", "select", "textarea"]);
+const BLOCKS = new Set(["p", "div", "section", "article", "header", "main", "ul", "ol", "table", "tr", "blockquote",
+  "figure", "figcaption", "dl", "dt", "dd", "hr"]);
+const WRAPPED = new Set(["pre", "a", "code", "h1", "h2", "h3", "h4", "h5", "h6"]);
 
-/** Convert HTML to compact Markdown-like text: headings, lists, links, and code blocks. */
+/** Inner range of the first `<name>` element; unclosed elements extend to the end. */
+function elementRange(lower: string, name: string): [number, number] | undefined {
+  let at = lower.indexOf(`<${name}`);
+  while (at >= 0 && /[\w-]/.test(lower[at + name.length + 1] ?? "")) at = lower.indexOf(`<${name}`, at + 1);
+  const open = at < 0 ? -1 : lower.indexOf(">", at);
+  if (open < 0) return undefined;
+  const close = lower.indexOf(`</${name}`, open);
+  return [open + 1, close < 0 ? lower.length : close];
+}
+
+function link(text: string, href: string | undefined, baseUrl: string): string {
+  if (!text || !href) return text;
+  try {
+    const url = new URL(decodeEntities(href), baseUrl);
+    return url.protocol === "http:" || url.protocol === "https:" ? `[${text}](${url.href})` : text;
+  } catch { return text; }
+}
+
+/**
+ * Convert HTML to compact Markdown-like text: headings, lists, links, and code blocks.
+ * A single forward scan keeps the work linear, because conversion blocks Pi's event loop.
+ */
 export function htmlToText(html: string, baseUrl: string): { title: string; text: string } {
-  const title = stripTags(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? "").replace(/\s+/g, " ").trim();
-  let body = html
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<(script|style|noscript|svg|template|head|nav|aside|footer|form|iframe|button)\b[\s\S]*?<\/\1>/gi, "");
+  // Lowercase ASCII only, so indexes stay aligned with the original text.
+  const lower = html.replace(/[A-Z]+/g, letters => letters.toLowerCase());
+  const titleRange = elementRange(lower, "title");
+  const title = titleRange ? clip(decodeEntities(html.slice(...titleRange)).replace(/\s+/g, " ").trim(), 300) : "";
   // Prefer the main content when the page marks it.
-  body = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(body)?.[1]
-    ?? /<article\b[^>]*>([\s\S]*?)<\/article>/i.exec(body)?.[1]
-    ?? /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(body)?.[1]
-    ?? body;
+  const [from, to] = elementRange(lower, "main") ?? elementRange(lower, "article") ?? elementRange(lower, "body")
+    ?? [0, html.length];
+  const out: string[] = [];
+  const open: { name: string; start: number; href?: string }[] = [];
   const blocks: string[] = [];
-  body = body.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_match, code: string) => {
-    blocks.push("```\n" + stripTags(code.replace(/<br\s*\/?>/gi, "\n")).replace(/^\n+|\s+$/g, "") + "\n```");
-    return `\n\n\u0000${blocks.length - 1}\u0000\n\n`;
-  });
-  body = body
-    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_match, level: string, inner: string) =>
-      `\n\n${"#".repeat(Number(level))} ${stripTags(inner).replace(/\s+/g, " ").trim()}\n\n`)
-    .replace(/<a\b[^>]*?href\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, (_match, href: string, inner: string) => {
-      const text = stripTags(inner).replace(/\s+/g, " ").trim();
-      if (!text) return "";
-      try {
-        const url = new URL(decodeEntities(href), baseUrl);
-        return url.protocol === "http:" || url.protocol === "https:" ? `[${text}](${url.href})` : text;
-      } catch { return text; }
-    })
-    .replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_match, inner: string) => "`" + stripTags(inner) + "`")
-    .replace(/<li\b[^>]*>/gi, "\n- ")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/?(p|div|section|article|header|main|ul|ol|table|tr|blockquote|figure|figcaption|dl|dt|dd|hr)\b[^>]*>/gi, "\n\n")
-    .replace(/<\/t[dh]>/gi, " | ");
-  const text = stripTags(body)
+  let inPre = false;
+  // Text is decoded once and never parsed again; NUL is reserved for code block placeholders.
+  const text = (raw: string) => {
+    if (raw) out.push(decodeEntities(inPre ? raw : raw.replace(/\s+/g, " ")).replaceAll("\u0000", ""));
+  };
+  let i = from;
+  while (i < to) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0 || lt >= to) { text(html.slice(i, to)); break; }
+    text(html.slice(i, lt));
+    if (html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      i = end < 0 ? to : end + 3;
+      continue;
+    }
+    const gt = html.indexOf(">", lt + 1);
+    if (gt < 0 || gt >= to) { text(html.slice(lt, to)); break; }
+    i = gt + 1;
+    if (html[lt + 1] === "!" || html[lt + 1] === "?") continue;
+    const tag = /^<(\/?)([a-z][a-z0-9-]*)/.exec(lower.slice(lt, Math.min(gt, lt + 40)));
+    if (!tag) { text(html.slice(lt, i)); continue; }
+    const [, closing, name] = tag;
+    if (!closing && SKIPPED.has(name) && html[gt - 1] !== "/") {
+      const end = lower.indexOf(`</${name}`, i);
+      const gtEnd = end < 0 ? -1 : lower.indexOf(">", end);
+      i = gtEnd < 0 ? to : gtEnd + 1;
+      continue;
+    }
+    if (name === "br") out.push("\n");
+    else if (inPre && name !== "pre") continue;
+    else if (name === "li" && !closing) out.push("\n- ");
+    else if ((name === "td" || name === "th") && closing) out.push(" | ");
+    else if (BLOCKS.has(name)) out.push("\n\n");
+    else if (WRAPPED.has(name) && !closing) {
+      if (inPre || open.length >= 64) continue;
+      const href = name === "a"
+        ? /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(html.slice(lt, Math.min(i, lt + 2048)))
+        : null;
+      open.push({ name, start: out.length, href: href ? href[1] ?? href[2] ?? href[3] : undefined });
+      inPre ||= name === "pre";
+    } else if (WRAPPED.has(name)) {
+      const index = open.findLastIndex(element => element.name === name);
+      if (index < 0) continue;
+      const [element] = open.splice(index);
+      const inner = out.splice(element.start).join("");
+      if (name === "pre") {
+        inPre = false;
+        blocks.push("```\n" + inner.replace(/^\n+/, "").trimEnd() + "\n```");
+        out.push(`\n\n\u0000${blocks.length - 1}\u0000\n\n`);
+        continue;
+      }
+      const content = inner.replace(/\s+/g, " ").trim();
+      if (name === "code") out.push(content && "`" + content + "`");
+      else if (name === "a") out.push(link(content, element.href, baseUrl));
+      else out.push(`\n\n${"#".repeat(Number(name[1]))} ${content}\n\n`);
+    }
+  }
+  const body = out.join("")
     .split("\n")
-    .map(line => line.replace(/[ \t\f\v ]+/g, " ").trim())
+    .map(line => line.replace(/[ \t\f\v\u00a0]+/g, " ").trim())
     .join("\n")
+    // A list item that wraps a paragraph leaves its bullet on a line of its own.
+    .replace(/^-\n+/gm, "- ")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/\u0000(\d+)\u0000/g, (_match, index: string) => blocks[Number(index)])
     .trim();
-  return { title, text };
+  return { title, text: body };
 }
 
 function timeoutSignal(signal: AbortSignal | undefined): AbortSignal {
@@ -123,29 +188,36 @@ interface SearxngResponse {
   unresponsive_engines?: [string, string][];
 }
 
+// Every field is clipped, so the output stays small whatever the instance returns.
+const flat = (text: unknown, limit: number) => clip(String(text ?? "").replace(/\s+/g, " ").trim(), limit);
+
 export function formatSearch(query: string, data: SearxngResponse): string {
   const lines: string[] = [];
-  for (const answer of data.answers ?? []) {
-    const text = typeof answer === "string" ? answer : answer.answer;
-    if (text) lines.push(`Answer: ${text}${typeof answer === "object" && answer.url ? ` (${answer.url})` : ""}`);
+  for (const answer of (data.answers ?? []).slice(0, 3)) {
+    const text = flat(typeof answer === "string" ? answer : answer?.answer, 500);
+    const source = typeof answer === "object" && answer?.url ? ` (${flat(answer.url, 500)})` : "";
+    if (text) lines.push(`Answer: ${text}${source}`);
   }
-  for (const box of data.infoboxes ?? []) {
-    if (box.infobox && box.content) lines.push(`${box.infobox}: ${box.content.replace(/\s+/g, " ").trim()}`);
+  for (const box of (data.infoboxes ?? []).slice(0, 2)) {
+    if (box?.infobox && box.content) lines.push(`${flat(box.infobox, 200)}: ${flat(box.content, 1000)}`);
   }
   if (lines.length) lines.push("");
-  const results = (data.results ?? []).filter(r => r.url).slice(0, SEARCH_RESULTS);
+  const results = (data.results ?? []).filter(r => r?.url).slice(0, SEARCH_RESULTS);
   results.forEach((result, index) => {
-    lines.push(`${index + 1}. ${(result.title || result.url)!.replace(/\s+/g, " ").trim()}`);
-    lines.push(`   ${result.url}`);
-    const snippet = result.content?.replace(/\s+/g, " ").trim();
+    lines.push(`${index + 1}. ${flat(result.title || result.url, 300)}`);
+    lines.push(`   ${flat(result.url, 1000)}`);
+    const snippet = flat(result.content, 600);
     if (snippet) lines.push(`   ${snippet}`);
-    if (result.publishedDate) lines.push(`   Published: ${result.publishedDate.slice(0, 10)}`);
+    if (result.publishedDate) lines.push(`   Published: ${flat(result.publishedDate, 10)}`);
   });
   if (!results.length) {
-    const failed = (data.unresponsive_engines ?? []).map(([engine, reason]) => `${engine} (${reason})`).join(", ");
-    lines.push(`No results for "${query}".${failed ? ` Unresponsive engines: ${failed}.` : ""}`);
+    const failed = (data.unresponsive_engines ?? []).slice(0, 10)
+      .map(([engine, reason]) => `${flat(engine, 50)} (${flat(reason, 100)})`).join(", ");
+    lines.push(`No results for "${flat(query, 300)}".${failed ? ` Unresponsive engines: ${failed}.` : ""}`);
   }
-  if (data.suggestions?.length) lines.push("", `Suggestions: ${data.suggestions.slice(0, 5).join("; ")}`);
+  if (data.suggestions?.length) {
+    lines.push("", `Suggestions: ${data.suggestions.slice(0, 5).map(s => flat(s, 100)).join("; ")}`);
+  }
   return lines.join("\n").trim();
 }
 
@@ -188,12 +260,19 @@ export default function webTools(pi: ExtensionAPI) {
           headers: { Accept: "application/json", "User-Agent": USER_AGENT },
           signal: timeoutSignal(signal),
         });
-        if (response.status === 403) {
-          throw new Error(`SearXNG at ${endpoint.origin} refused JSON output. Add "json" to search.formats in its settings.yml.`);
+        if (!response.ok) {
+          await response.body?.cancel();
+          if (response.status === 403) {
+            throw new Error(`SearXNG at ${endpoint.origin} refused JSON output. Add "json" to search.formats in its settings.yml.`);
+          }
+          if (response.status === 429) throw new Error(`SearXNG at ${endpoint.origin} is rate limiting requests. Try again later.`);
+          throw new Error(`SearXNG returned HTTP ${response.status}`);
         }
-        if (response.status === 429) throw new Error(`SearXNG at ${endpoint.origin} is rate limiting requests. Try again later.`);
-        if (!response.ok) throw new Error(`SearXNG returned HTTP ${response.status}`);
-        const data = await response.json() as SearxngResponse;
+        const { bytes, truncated } = await readLimited(response, MAX_DOWNLOAD_BYTES);
+        if (truncated) throw new Error(`SearXNG response exceeds ${MAX_DOWNLOAD_BYTES / 1024 / 1024} MiB`);
+        let data: SearxngResponse;
+        try { data = JSON.parse(new TextDecoder().decode(bytes)); }
+        catch { throw new Error(`SearXNG at ${endpoint.origin} did not return JSON. Check BONSAI_SEARXNG_URL.`); }
         return {
           content: [{ type: "text", text: formatSearch(params.query, data) }],
           details: { query: params.query, results: Math.min(data.results?.length ?? 0, SEARCH_RESULTS) },
@@ -245,7 +324,7 @@ export default function webTools(pi: ExtensionAPI) {
       const finalUrl = response.url || url.href;
       const isHtml = mime.includes("html") || (!mime && /^\s*<(!doctype html|html)/i.test(raw));
       const { title, text } = isHtml ? htmlToText(raw, finalUrl) : { title: "", text: raw.trim() };
-      const header = [`URL: ${finalUrl}`, title && `Title: ${title}`].filter(Boolean).join("\n");
+      const header = [`URL: ${clip(finalUrl, 2000)}`, title && `Title: ${title}`].filter(Boolean).join("\n");
       let fullOutputPath: string | undefined;
       let body = text || "(no text content)";
       if (body.length > MAX_RESULT_CHARS) {
@@ -253,10 +332,15 @@ export default function webTools(pi: ExtensionAPI) {
         tempDirs.add(dir);
         fullOutputPath = join(dir, "page.md");
         await writeFile(fullOutputPath, `${header}\n\n${body}\n`, "utf8");
-        const cut = body.lastIndexOf("\n", MAX_RESULT_CHARS);
-        const shown = body.slice(0, cut > MAX_RESULT_CHARS / 2 ? cut : MAX_RESULT_CHARS);
-        const shownLines = header.split("\n").length + 1 + shown.split("\n").length;
-        body = `${shown}\n\n[Showing ${shown.length} of ${body.length} characters. Full text: ${fullOutputPath}. Use read with offset ${shownLines + 1} to continue.]`;
+        const newline = body.lastIndexOf("\n", MAX_RESULT_CHARS);
+        const wholeLines = newline > MAX_RESULT_CHARS / 2;
+        const shown = body.slice(0, wholeLines ? newline : MAX_RESULT_CHARS);
+        // The file starts with the header and a blank line. Resume at the first line not shown in
+        // full, which is the last shown line when the cut fell inside it.
+        const lastShown = header.split("\n").length + 1 + shown.split("\n").length;
+        const offset = wholeLines ? lastShown + 1 : lastShown;
+        body = `${shown}\n\n[Showing ${shown.length} of ${body.length} characters. Full text: ${fullOutputPath}. ` +
+          `Use read with offset ${offset} to continue${wholeLines ? "" : "; that line starts with text shown above"}.]`;
       }
       if (downloadTruncated) body += `\n\n[Download stopped after ${MAX_DOWNLOAD_BYTES / 1024 / 1024} MiB.]`;
       return {
