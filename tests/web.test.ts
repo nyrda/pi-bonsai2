@@ -50,6 +50,8 @@ const server = createServer((req, res) => {
     res.end("<body><p>Plain <b>fragment</b></p></body>");
   } else if (url.pathname === "/untyped-png") {
     res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]));
+  } else if (url.pathname === "/untyped-gzip") {
+    res.end(Buffer.from([0x1f, 0x8b, 0x08, 0x08, 0x41, 0x42, 0x43, 0x44]));
   } else if (url.pathname === "/svg") {
     res.writeHead(200, { "Content-Type": "image/svg+xml" });
     res.end("<svg/>");
@@ -136,6 +138,7 @@ test("web_fetch rejects non-HTTP URLs, HTTP errors, and binary content", async (
   await assert.rejects(tools.web_fetch.execute("3", { url: `${origin}/image` }), /Unsupported content type image\/png/);
   await assert.rejects(tools.web_fetch.execute("4", { url: `${origin}/svg` }), /Unsupported content type image\/svg\+xml/);
   await assert.rejects(tools.web_fetch.execute("5", { url: `${origin}/untyped-png` }), /Unsupported binary content/);
+  await assert.rejects(tools.web_fetch.execute("6", { url: `${origin}/untyped-gzip` }), /Unsupported binary content/);
 });
 
 test("htmlToText falls back to the body and decodes numeric entities", () => {
@@ -153,6 +156,7 @@ test("htmlToText stays fast on malformed markup", () => {
   const started = performance.now();
   htmlToText("<p>" + "<".repeat(1_000_000) + "<script>".repeat(100_000) + "<h1><a href='".repeat(100_000), "https://x.test/");
   htmlToText("<div hidden>" + "<div>x</div><template>".repeat(200_000) + "</template>".repeat(100_000), "https://x.test/");
+  htmlToText("<pre>" + "`a".repeat(2_000_000) + "</pre>", "https://x.test/");
   assert.ok(performance.now() - started < 2000);
 });
 
@@ -214,4 +218,14 @@ test("htmlToText maps legacy numeric references and replaces invalid ones", () =
 test("htmlToText picks code delimiters longer than backticks in the code", () => {
   const { text } = htmlToText("<pre>```\nfenced\n```</pre><p><code>`x`</code></p>", "https://x.test/");
   assert.equal(text, "````\n```\nfenced\n```\n````\n\n`` `x` ``");
+});
+
+test("htmlToText counts only real tags while skipping hidden elements", () => {
+  const html = "<div hidden><script>const t = '<div>'</script><!-- </div> --><span title=\"</div>\">x</span>" +
+    '<div>inner</div></div><p>visible</p><section hidden="until&#45;found">found</section>';
+  assert.equal(htmlToText(html, "https://x.test/").text, "visible\n\nfound");
+});
+
+test("htmlToText treats self-closing tags in XHTML as empty", () => {
+  assert.equal(htmlToText('<div hidden="hidden"/><p>visible</p>', "https://x.test/", true).text, "visible");
 });

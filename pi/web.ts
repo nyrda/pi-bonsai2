@@ -36,10 +36,14 @@ async function readLimited(response: Response, limit: number): Promise<{ bytes: 
   return { bytes, truncated };
 }
 
+// PDF, ZIP, gzip, PNG, GIF, JPEG, and RIFF (WebP, WAV, AVI) file signatures.
+const SIGNATURES = [[0x25, 0x50, 0x44, 0x46, 0x2d], [0x50, 0x4b, 0x03, 0x04], [0x1f, 0x8b], [0x89, 0x50, 0x4e, 0x47],
+  [0x47, 0x49, 0x46, 0x38], [0xff, 0xd8, 0xff], [0x52, 0x49, 0x46, 0x46]];
+
 /** Whether untyped content is binary: a known file signature or a NUL byte near the start. */
 function isBinary(bytes: Uint8Array): boolean {
-  const start = new TextDecoder("latin1").decode(bytes.subarray(0, 8));
-  return /^(%PDF-|PK\x03\x04|\x1f\x8b|\x89PNG|GIF8|\xff\xd8\xff|RIFF|\x00)/.test(start) || bytes.subarray(0, 1024).includes(0);
+  return SIGNATURES.some(signature => signature.every((byte, index) => bytes[index] === byte)) ||
+    bytes.subarray(0, 1024).includes(0);
 }
 
 function decode(bytes: Uint8Array, contentType: string, sniffHtml: boolean): string {
@@ -147,41 +151,13 @@ function endTag(lower: string, name: string, from: number): number {
   return -1;
 }
 
-/** Index after the end tag closing an element opened before `from`, counting nested elements of the same name. */
-function skipElement(lower: string, name: string, from: number): number {
-  const end = (at: number) => { const gt = lower.indexOf(">", at); return gt < 0 ? lower.length : gt + 1; };
-  if (RAW_TEXT.has(name)) { const at = endTag(lower, name, from); return at < 0 ? lower.length : end(at); }
-  const boundary = (at: number) => { const next = lower[at]; return next === undefined || next === ">" || next === "/" || next <= " "; };
-  // Each search continues from the previous match, and a search that finds nothing is not
-  // repeated, so the scan stays linear.
-  const find = (k: number) => {
-    let at = lower.indexOf(`<${name}`, k);
-    while (at >= 0 && !boundary(at + name.length + 1)) at = lower.indexOf(`<${name}`, at + 1);
-    return at < 0 ? Infinity : at;
-  };
-  let depth = 1;
-  let open = find(from);
-  let close = -1;
-  for (let k = from; ;) {
-    if (open < k) open = find(k);
-    if (close < k) close = endTag(lower, name, k);
-    if (close < 0) return lower.length;
-    if (open < close) {
-      const next = end(open);
-      // A self-closed foreign element such as <svg/> has no end tag to wait for.
-      if (!(FOREIGN.has(name) && lower[next - 2] === "/")) depth++;
-      k = next;
-    } else {
-      if (--depth === 0) return end(close);
-      k = end(close);
-    }
-  }
-}
-
 /** A run of backticks longer than any in `code`, so the code cannot close its own fence. */
 function fence(code: string, minimum: number): string {
   let longest = 0;
-  for (const run of code.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  for (let k = 0, run = 0; k < code.length; k++) {
+    run = code[k] === "`" ? run + 1 : 0;
+    if (run > longest) longest = run;
+  }
   return "`".repeat(Math.max(minimum, longest + 1));
 }
 
@@ -196,8 +172,9 @@ function link(text: string, href: string | undefined, baseUrl: string): string {
 /**
  * Convert HTML to compact Markdown-like text: headings, lists, links, and code blocks.
  * A single forward scan keeps the work linear, because conversion blocks Pi's event loop.
+ * With `xml`, as for XHTML, a self-closing tag such as `<div/>` has no content.
  */
-export function htmlToText(html: string, baseUrl: string): { title: string; text: string } {
+export function htmlToText(html: string, baseUrl: string, xml = false): { title: string; text: string } {
   // Lowercase ASCII only, so indexes stay aligned with the original text.
   const lower = html.replace(/[A-Z]+/g, letters => letters.toLowerCase());
   const to = html.length;
@@ -210,6 +187,9 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
   const open: { name: string; start: number; href?: string }[] = [];
   const blocks: string[] = [];
   let inPre = false;
+  // A skipped element, counting nested elements of its name until its end tag. The scan goes on
+  // while skipping, so comments, raw text, and attribute values cannot fake those tags.
+  let skip: { name: string; depth: number } | undefined;
   // Find the `>` ending a tag, skipping quoted attribute values. After a quote that never closes,
   // the rest of the page uses the first `>`, so malformed input is scanned at most once more.
   let quotesReliable = true;
@@ -230,7 +210,7 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
   // Text is decoded once and never parsed again. NUL marks code block placeholders and SOH
   // marks content regions, so both are removed from page text.
   const text = (raw: string) => {
-    if (raw) out.push(decodeEntities(inPre ? raw : raw.replace(/\s+/g, " ")).replace(/[\u0000\u0001]/g, ""));
+    if (raw && !skip) out.push(decodeEntities(inPre ? raw : raw.replace(/\s+/g, " ")).replace(/[\u0000\u0001]/g, ""));
   };
   let i = 0;
   while (i < to) {
@@ -250,6 +230,19 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     if (!tag) { text(html.slice(lt, i)); continue; }
     const [, closing, name] = tag;
     const tagText = html.slice(lt, gt);
+    // HTML ignores the self-closing slash on its own elements, so `<script/>` still has content.
+    const selfClosed = html[gt - 1] === "/" && (xml || FOREIGN.has(name));
+    // Raw text ends at its first end tag, whether or not it is skipped.
+    if (!closing && !selfClosed && RAW_TEXT.has(name) && (skip || SKIPPED.has(name))) {
+      const end = endTag(lower, name, i);
+      const gtEnd = end < 0 ? -1 : lower.indexOf(">", end);
+      i = gtEnd < 0 ? to : gtEnd + 1;
+      continue;
+    }
+    if (skip) {
+      if (name === skip.name && !selfClosed && (closing ? --skip.depth : ++skip.depth) === 0) skip = undefined;
+      continue;
+    }
     if (!closing && name === "title") {
       const end = endTag(lower, "title", i);
       if (!title) title = clip(decodeEntities(html.slice(i, end < 0 ? to : end)).replace(/\s+/g, " ").trim(), 300);
@@ -262,13 +255,12 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
       catch { base = undefined; }
       continue;
     }
-    // HTML ignores the self-closing slash on its own elements, so `<script/>` still has content.
-    const selfClosed = FOREIGN.has(name) && html[gt - 1] === "/";
     // Hidden elements are not rendered; `hidden="until-found"` content can still be revealed by search.
-    const hidden = !closing && !NO_SKIP_END.has(name) && lower.slice(lt, gt).includes("hidden") &&
-      ![undefined, "until-found"].includes(attributes(tagText).get("hidden")?.toLowerCase());
+    const hiddenValue = !closing && !NO_SKIP_END.has(name) && lower.slice(lt, gt).includes("hidden")
+      ? attributes(tagText).get("hidden") : undefined;
+    const hidden = hiddenValue !== undefined && decodeEntities(hiddenValue).trim().toLowerCase() !== "until-found";
     if (!closing && !selfClosed && (SKIPPED.has(name) || hidden)) {
-      i = skipElement(lower, name, i);
+      skip = { name, depth: 1 };
       continue;
     }
     if (name === "br") out.push("\n");
@@ -493,7 +485,9 @@ export default function webTools(pi: ExtensionAPI) {
       const finalUrl = response.url || url.href;
       const isHtml = mime.includes("html") ||
         (!mime && /^\s*(<!doctype html|<!--|<(html|head|body|main|article|section|div|p|meta|title|h[1-6])[\s/>])/i.test(raw));
-      const { title, text } = isHtml ? htmlToText(raw, finalUrl) : { title: "", text: raw.trim() };
+      const { title, text } = isHtml
+        ? htmlToText(raw, finalUrl, mime === "application/xhtml+xml")
+        : { title: "", text: raw.trim() };
       const header = [`URL: ${clip(finalUrl, 2000)}`, title && `Title: ${title}`].filter(Boolean).join("\n");
       let fullOutputPath: string | undefined;
       let body = text || "(no text content)";
