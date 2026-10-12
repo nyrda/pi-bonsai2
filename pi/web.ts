@@ -36,8 +36,14 @@ async function readLimited(response: Response, limit: number): Promise<{ bytes: 
   return { bytes, truncated };
 }
 
-function decode(bytes: Uint8Array, contentType: string): string {
-  const charset = /charset=["']?([\w-]+)/i.exec(contentType)?.[1];
+function decode(bytes: Uint8Array, contentType: string, sniffHtml: boolean): string {
+  const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+  let charset = bom ? "utf-8" : /charset=["']?([\w-]+)/i.exec(contentType)?.[1];
+  if (!charset && sniffHtml) {
+    // HTML may declare its encoding in a <meta> tag within the first 1024 bytes.
+    const start = new TextDecoder("latin1").decode(bytes.subarray(0, 1024));
+    charset = /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(start)?.[1];
+  }
   try { return new TextDecoder(charset || "utf-8").decode(bytes); }
   catch { return new TextDecoder().decode(bytes); }
 }
@@ -66,21 +72,13 @@ function decodeEntities(text: string): string {
 }
 
 const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
-const SKIPPED = new Set(["script", "style", "noscript", "svg", "template", "head", "nav", "aside", "footer", "form",
+const SKIPPED = new Set(["script", "style", "noscript", "svg", "template", "nav", "aside", "footer", "form",
   "iframe", "button", "select", "textarea"]);
+// Content regions in order of preference, marked in the output while scanning.
+const REGIONS: Record<string, string> = { main: "m", article: "a", body: "b" };
 const BLOCKS = new Set(["p", "div", "section", "article", "header", "main", "ul", "ol", "table", "tr", "blockquote",
   "figure", "figcaption", "dl", "dt", "dd", "hr"]);
 const WRAPPED = new Set(["pre", "a", "code", "h1", "h2", "h3", "h4", "h5", "h6"]);
-
-/** Inner range of the first `<name>` element; unclosed elements extend to the end. */
-function elementRange(lower: string, name: string): [number, number] | undefined {
-  let at = lower.indexOf(`<${name}`);
-  while (at >= 0 && /[\w-]/.test(lower[at + name.length + 1] ?? "")) at = lower.indexOf(`<${name}`, at + 1);
-  const open = at < 0 ? -1 : lower.indexOf(">", at);
-  if (open < 0) return undefined;
-  const close = lower.indexOf(`</${name}`, open);
-  return [open + 1, close < 0 ? lower.length : close];
-}
 
 function link(text: string, href: string | undefined, baseUrl: string): string {
   if (!text || !href) return text;
@@ -97,20 +95,20 @@ function link(text: string, href: string | undefined, baseUrl: string): string {
 export function htmlToText(html: string, baseUrl: string): { title: string; text: string } {
   // Lowercase ASCII only, so indexes stay aligned with the original text.
   const lower = html.replace(/[A-Z]+/g, letters => letters.toLowerCase());
-  const titleRange = elementRange(lower, "title");
-  const title = titleRange ? clip(decodeEntities(html.slice(...titleRange)).replace(/\s+/g, " ").trim(), 300) : "";
-  // Prefer the main content when the page marks it.
-  const [from, to] = elementRange(lower, "main") ?? elementRange(lower, "article") ?? elementRange(lower, "body")
-    ?? [0, html.length];
+  const to = html.length;
+  let title = "";
+  let base: string | undefined;
+  const regions = new Set<string>();
   const out: string[] = [];
   const open: { name: string; start: number; href?: string }[] = [];
   const blocks: string[] = [];
   let inPre = false;
-  // Text is decoded once and never parsed again; NUL is reserved for code block placeholders.
+  // Text is decoded once and never parsed again. NUL marks code block placeholders and SOH
+  // marks content regions, so both are removed from page text.
   const text = (raw: string) => {
-    if (raw) out.push(decodeEntities(inPre ? raw : raw.replace(/\s+/g, " ")).replaceAll("\u0000", ""));
+    if (raw) out.push(decodeEntities(inPre ? raw : raw.replace(/\s+/g, " ")).replace(/[\u0000\u0001]/g, ""));
   };
-  let i = from;
+  let i = 0;
   while (i < to) {
     const lt = html.indexOf("<", i);
     if (lt < 0 || lt >= to) { text(html.slice(i, to)); break; }
@@ -127,6 +125,18 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     const tag = /^<(\/?)([a-z][a-z0-9-]*)/.exec(lower.slice(lt, Math.min(gt, lt + 40)));
     if (!tag) { text(html.slice(lt, i)); continue; }
     const [, closing, name] = tag;
+    if (!closing && name === "title") {
+      const end = lower.indexOf("</title", i);
+      if (!title) title = clip(decodeEntities(html.slice(i, end < 0 ? to : end)).replace(/\s+/g, " ").trim(), 300);
+      if (end >= 0) i = end;
+      continue;
+    }
+    if (!closing && name === "base" && base === undefined) {
+      const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(html.slice(lt, Math.min(i, lt + 2048)));
+      try { base = href ? new URL(decodeEntities(href[1] ?? href[2] ?? href[3]), baseUrl).href : undefined; }
+      catch { base = undefined; }
+      continue;
+    }
     if (!closing && SKIPPED.has(name) && html[gt - 1] !== "/") {
       const end = lower.indexOf(`</${name}`, i);
       const gtEnd = end < 0 ? -1 : lower.indexOf(">", end);
@@ -135,6 +145,16 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     }
     if (name === "br") out.push("\n");
     else if (inPre && name !== "pre") continue;
+    else if (name in REGIONS) {
+      // Only the first element of each kind counts; a close before its open is ignored.
+      const key = REGIONS[name];
+      const marker = closing ? key.toUpperCase() : key;
+      if (closing ? regions.has(key) && !regions.has(marker) : !regions.has(key)) {
+        regions.add(marker);
+        out.push(`\u0001${marker}`);
+      }
+      out.push("\n\n");
+    }
     else if (name === "li" && !closing) out.push("\n- ");
     else if ((name === "td" || name === "th") && closing) out.push(" | ");
     else if (BLOCKS.has(name)) out.push("\n\n");
@@ -158,11 +178,20 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
       }
       const content = inner.replace(/\s+/g, " ").trim();
       if (name === "code") out.push(content && "`" + content + "`");
-      else if (name === "a") out.push(link(content, element.href, baseUrl));
+      else if (name === "a") out.push(link(content, element.href, base ?? baseUrl));
       else out.push(`\n\n${"#".repeat(Number(name[1]))} ${content}\n\n`);
     }
   }
-  const body = out.join("")
+  let joined = out.join("");
+  // Prefer the main content when the page marks it.
+  for (const key of ["m", "a", "b"]) {
+    const start = joined.indexOf(`\u0001${key}`);
+    if (start < 0) continue;
+    const end = joined.indexOf(`\u0001${key.toUpperCase()}`, start);
+    joined = joined.slice(start, end < 0 ? joined.length : end);
+    break;
+  }
+  const body = joined.replace(/\u0001[a-zA-Z]/g, "")
     .split("\n")
     .map(line => line.replace(/[ \t\f\v\u00a0]+/g, " ").trim())
     .join("\n")
@@ -320,9 +349,10 @@ export default function webTools(pi: ExtensionAPI) {
         throw new Error(`Unsupported content type ${mime} for ${response.url || url.href}`);
       }
       const { bytes, truncated: downloadTruncated } = await readLimited(response, MAX_DOWNLOAD_BYTES);
-      const raw = decode(bytes, contentType);
+      const raw = decode(bytes, contentType, !mime || mime.includes("html"));
       const finalUrl = response.url || url.href;
-      const isHtml = mime.includes("html") || (!mime && /^\s*<(!doctype html|html)/i.test(raw));
+      const isHtml = mime.includes("html") ||
+        (!mime && /^\s*(<!doctype html|<!--|<(html|head|body|main|article|section|div|p|meta|title|h[1-6])[\s/>])/i.test(raw));
       const { title, text } = isHtml ? htmlToText(raw, finalUrl) : { title: "", text: raw.trim() };
       const header = [`URL: ${clip(finalUrl, 2000)}`, title && `Title: ${title}`].filter(Boolean).join("\n");
       let fullOutputPath: string | undefined;

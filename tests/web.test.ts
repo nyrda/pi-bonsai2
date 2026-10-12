@@ -43,6 +43,11 @@ const server = createServer((req, res) => {
   } else if (url.pathname === "/single-line") {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end(singleLine);
+  } else if (url.pathname === "/legacy") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(Buffer.concat([Buffer.from('<html><head><meta charset="windows-1252"></head><body><p>Caf'), Buffer.from([0xe9]), Buffer.from("</p></body></html>")]));
+  } else if (url.pathname === "/fragment") {
+    res.end("<body><p>Plain <b>fragment</b></p></body>");
   } else if (url.pathname === "/image") {
     res.writeHead(200, { "Content-Type": "image/png" });
     res.end(Buffer.alloc(16));
@@ -113,6 +118,12 @@ test("web_fetch resumes a line cut in the middle instead of skipping it", async 
   assert.equal(readFileSync(result.details.fullOutputPath, "utf8").split("\n")[offset - 1], singleLine);
 });
 
+test("web_fetch honors a <meta> charset and converts HTML sent without a content type", async () => {
+  const { tools } = setup({ BONSAI_WEB: undefined });
+  assert.match(text(await tools.web_fetch.execute("1", { url: `${origin}/legacy` })), /\n\nCafé$/);
+  assert.match(text(await tools.web_fetch.execute("2", { url: `${origin}/fragment` })), /\n\nPlain fragment$/);
+});
+
 test("web_fetch rejects non-HTTP URLs, HTTP errors, and binary content", async () => {
   const { tools } = setup({ BONSAI_WEB: undefined });
   await assert.rejects(tools.web_fetch.execute("1", { url: "file:///etc/passwd" }), /Only http/);
@@ -143,4 +154,10 @@ test("formatSearch clips long fields from the instance", () => {
     results: [{ title: "t".repeat(5000), url: "https://x.test/", content: "c".repeat(50_000) }],
   });
   assert.ok(output.length < 3000);
+});
+
+test("htmlToText ignores regions in comments and scripts and resolves links against <base>", () => {
+  const html = '<html><head><base href="/docs/"><title>T</title><script>"<main>fake</main>"</script></head>' +
+    '<body><!-- <main>old</main> --><header>Site</header><main><a href="intro">Intro</a></main></body></html>';
+  assert.deepEqual(htmlToText(html, "https://x.test/app/index.html"), { title: "T", text: "[Intro](https://x.test/docs/intro)" });
 });
