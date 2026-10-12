@@ -78,7 +78,8 @@ function loadLibraries() {
       },
     });
     turndown.addRule("empty-link", {
-      filter: (node: any) => node.nodeName === "A" && !node.textContent.trim(),
+      filter: (node: any) => node.nodeName === "A" && !node.textContent.trim() &&
+        !Array.from(node.getElementsByTagName("img")).some((image: any) => image.getAttribute("alt")?.trim()),
       replacement: () => "",
     });
     return { parseHTML, Readability, turndown };
@@ -113,7 +114,7 @@ function addTableHeaders(root: any) {
 function tableToMarkdown(table: any): string {
   const rows = [...table.querySelectorAll("tr")].filter((row: any) => row.closest("table") === table)
     .map((row: any) => [...row.children].filter((cell: any) => cell.nodeName === "TD" || cell.nodeName === "TH")
-      .map((cell: any) => oneLine(cell.textContent).replace(/\|/g, "\\|")));
+      .map((cell: any) => oneLine(cell.textContent).replace(/[\\|]/g, "\\$&")));
   const [header, ...body] = rows.filter(cells => cells.length);
   if (!header) return "";
   const line = (cells: string[]) => `| ${cells.join(" | ")} |`;
@@ -125,9 +126,11 @@ function tidy(markdown: string): string {
   const lines: string[] = [];
   let fence = "";
   for (const line of markdown.split("\n")) {
-    const marker = /^(`{3,}|~{3,})/.exec(line)?.[1];
+    // Fences can be indented, as inside list items and quotes.
+    const [, indent = "", marker] = /^([ \t>]*)(`{3,}|~{3,})/.exec(line) ?? [];
     if (fence) {
-      if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.slice(marker.length).trim()) fence = "";
+      const closing = marker && marker[0] === fence[0] && marker.length >= fence.length;
+      if (closing && !line.slice(indent.length + marker.length).trim()) fence = "";
       lines.push(line);
     } else if (marker) {
       fence = marker;
@@ -182,7 +185,9 @@ function blocksToMarkdown(turndown: any, root: any): { markdown: string; complet
     if (node.nodeName === "TABLE") return emit(tableToMarkdown(node));
     // Convert groups of children inside a copy of this element's tag, so a list keeps its type,
     // and an ordered list its numbering.
-    const close = `</${node.localName}>`;
+    // A list item's own marker is added by its list, so its groups go inside a neutral <div>.
+    const item = node.nodeName === "LI";
+    const close = item ? "</div>" : `</${node.localName}>`;
     const ordered = node.nodeName === "OL";
     const first = ordered ? Number(node.getAttribute("start") ?? 1) || 1 : 1;
     let items = 0; // <li> children before the current child
@@ -190,7 +195,7 @@ function blocksToMarkdown(turndown: any, root: any): { markdown: string; complet
     let group = "";
     const flush = () => {
       if (!group) return;
-      const shell = node.cloneNode(false);
+      const shell = item ? node.ownerDocument.createElement("div") : node.cloneNode(false);
       if (ordered) shell.setAttribute("start", String(first + groupStart));
       emit(convert(shell.outerHTML.slice(0, -close.length) + group + close, node));
       group = "";
@@ -198,9 +203,13 @@ function blocksToMarkdown(turndown: any, root: any): { markdown: string; complet
     for (const child of node.childNodes) {
       if (total >= MAX_MARKDOWN_CHARS) return;
       if (child.nodeType === 1 && (sizes.get(child) ?? 0) > BLOCK_HTML_CHARS) {
-        // A child too large for a group is converted on its own, without this element's context.
+        // A child too large for a group is converted on its own; a list item keeps its marker.
         flush();
+        const start = parts.length;
         visit(child);
+        if (child.nodeName === "LI" && parts.length > start) {
+          parts[start] = `${ordered ? `${first + items}.` : "-"} ${parts[start]}`;
+        }
       } else {
         if (!group) groupStart = items;
         group += child.nodeType === 1 ? child.outerHTML : child.nodeType === 3 ? escapeHtml(child.textContent) : "";
@@ -264,6 +273,7 @@ export async function htmlToMarkdown(html: string, url: string): Promise<{ title
   const document = parse();
   const pageTitle = oneLine(document.title);
   if (nestedDeeperThan(document.documentElement, MAX_NESTING_DEPTH)) {
+    for (const element of document.querySelectorAll("script, style, noscript, template, [hidden]")) element.remove();
     const text = String(contentRoot(document)?.textContent ?? "").replace(/[ \t\f\v\u00a0]+/g, " ");
     return { title: clip(pageTitle, 300), text: tidy(text.split("\n").map(line => line.trim()).join("\n")) };
   }

@@ -217,3 +217,21 @@ test("htmlToMarkdown converts a document without a body element", async () => {
   const { text } = await htmlToMarkdown("<!doctype html><html><p>Hello <b>there</b></p></html>", "https://x.test/");
   assert.equal(text, "Hello **there**");
 });
+
+test("htmlToMarkdown keeps nested code, list markers, cell escapes, and image links", async () => {
+  const nested = await htmlToMarkdown("<ul><li><p>Step</p><pre>a\n\n\nb</pre></li></ul>", "https://x.test/");
+  assert.match(nested.text, /a\n {4}\n {4}\n {4}b/);
+  const big = `<code>${"y".repeat(100)}</code> `.repeat(800);
+  const list = await htmlToMarkdown(`<h1>T</h1><ol start="3"><li>small</li><li>${big}</li><li>after</li></ol>`, "https://x.test/");
+  assert.match(list.text, /\n3\. +small\n\n4\. `y{100}` `y{100}`[^]*`\n\n5\. +after$/);
+  const rows = `<tr><td>a\\b|c</td></tr>`.repeat(3000);
+  const table = await htmlToMarkdown(`<table><tr><th>h</th></tr>${rows}</table>`, "https://x.test/");
+  assert.equal(table.text.split("\n")[2], "| a\\\\b\\|c |");
+  const image = await htmlToMarkdown('<p><a href="/x"><img src="i.png" alt="Logo"></a></p>', "https://x.test/");
+  assert.equal(image.text, "[Logo](https://x.test/x)");
+});
+
+test("htmlToMarkdown leaves scripts and hidden text out of deep pages", async () => {
+  const html = "<div>".repeat(300) + "<script>evil()</script><span hidden>secret</span>visible" + "</div>".repeat(300);
+  assert.equal((await htmlToMarkdown(html, "https://x.test/")).text, "visible");
+});
