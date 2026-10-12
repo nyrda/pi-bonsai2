@@ -48,6 +48,8 @@ const server = createServer((req, res) => {
     res.end(Buffer.concat([Buffer.from('<html><head><meta charset="windows-1252"></head><body><p>Caf'), Buffer.from([0xe9]), Buffer.from("</p></body></html>")]));
   } else if (url.pathname === "/fragment") {
     res.end("<body><p>Plain <b>fragment</b></p></body>");
+  } else if (url.pathname === "/untyped-png") {
+    res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]));
   } else if (url.pathname === "/svg") {
     res.writeHead(200, { "Content-Type": "image/svg+xml" });
     res.end("<svg/>");
@@ -133,6 +135,7 @@ test("web_fetch rejects non-HTTP URLs, HTTP errors, and binary content", async (
   await assert.rejects(tools.web_fetch.execute("2", { url: `${origin}/missing` }), /HTTP 404/);
   await assert.rejects(tools.web_fetch.execute("3", { url: `${origin}/image` }), /Unsupported content type image\/png/);
   await assert.rejects(tools.web_fetch.execute("4", { url: `${origin}/svg` }), /Unsupported content type image\/svg\+xml/);
+  await assert.rejects(tools.web_fetch.execute("5", { url: `${origin}/untyped-png` }), /Unsupported binary content/);
 });
 
 test("htmlToText falls back to the body and decodes numeric entities", () => {
@@ -149,6 +152,7 @@ test("htmlToText keeps escaped markup in inline code and link text", () => {
 test("htmlToText stays fast on malformed markup", () => {
   const started = performance.now();
   htmlToText("<p>" + "<".repeat(1_000_000) + "<script>".repeat(100_000) + "<h1><a href='".repeat(100_000), "https://x.test/");
+  htmlToText("<div hidden>" + "<div>x</div><template>".repeat(200_000) + "</template>".repeat(100_000), "https://x.test/");
   assert.ok(performance.now() - started < 2000);
 });
 
@@ -193,4 +197,21 @@ test("htmlToText keeps nested and sibling articles and skips self-closed scripts
   assert.equal(htmlToText(post, "https://x.test/").text, "Post\n\nComment\n\nMore");
   const listing = "<body><h1>News</h1><article>One</article><article>Two</article></body>";
   assert.equal(htmlToText(listing, "https://x.test/").text, "# News\n\nOne\n\nTwo");
+});
+
+test("htmlToText skips nested inert elements and hidden subtrees", () => {
+  const nested = "<template><template>x</template><main>fake</main></template><main>real</main>";
+  assert.equal(htmlToText(nested, "https://x.test/").text, "real");
+  const hidden = '<main><p>Current</p><div hidden>stale <div>view</div></div><section hidden="until-found">Found</section>' +
+    "<p hidden>Kept</p><svg><svg/><text>icon</text></svg></main>";
+  assert.equal(htmlToText(hidden, "https://x.test/").text, "Current\n\nFound\n\nKept");
+});
+
+test("htmlToText maps legacy numeric references and replaces invalid ones", () => {
+  assert.equal(htmlToText("<p>A&#151;B&#x80;&#xD800;&#0;&#9999999;</p>", "https://x.test/").text, "A—B€\ufffd\ufffd\ufffd");
+});
+
+test("htmlToText picks code delimiters longer than backticks in the code", () => {
+  const { text } = htmlToText("<pre>```\nfenced\n```</pre><p><code>`x`</code></p>", "https://x.test/");
+  assert.equal(text, "````\n```\nfenced\n```\n````\n\n`` `x` ``");
 });

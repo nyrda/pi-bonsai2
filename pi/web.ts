@@ -36,6 +36,12 @@ async function readLimited(response: Response, limit: number): Promise<{ bytes: 
   return { bytes, truncated };
 }
 
+/** Whether untyped content is binary: a known file signature or a NUL byte near the start. */
+function isBinary(bytes: Uint8Array): boolean {
+  const start = new TextDecoder("latin1").decode(bytes.subarray(0, 8));
+  return /^(%PDF-|PK\x03\x04|\x1f\x8b|\x89PNG|GIF8|\xff\xd8\xff|RIFF|\x00)/.test(start) || bytes.subarray(0, 1024).includes(0);
+}
+
 function decode(bytes: Uint8Array, contentType: string, sniffHtml: boolean): string {
   const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
   let charset = bom ? "utf-8" : /charset=["']?([\w-]+)/i.exec(contentType)?.[1];
@@ -61,11 +67,17 @@ const ENTITIES: Record<string, string> = {
   lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", bull: "•", trade: "™", euro: "€", rarr: "→", larr: "←",
 };
 
+// HTML maps numeric references in U+0080 to U+009F to their Windows-1252 characters.
+const C1 = "\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f" +
+  "\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178";
+
 function decodeEntities(text: string): string {
   return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z][a-z0-9]{1,31});/gi, (match, name: string) => {
     if (name[0] === "#") {
       const code = name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
-      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+      if (code >= 0x80 && code <= 0x9f) return C1[code - 0x80];
+      const invalid = code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff);
+      return invalid ? "\ufffd" : String.fromCodePoint(code);
     }
     return ENTITIES[name] ?? ENTITIES[name.toLowerCase()] ?? match;
   });
@@ -78,6 +90,13 @@ const SKIPPED = new Set(["script", "style", "noscript", "svg", "template", "nav"
 const REGIONS: Record<string, string> = { main: "m", article: "a", body: "b" };
 // Elements from other namespaces, where a self-closing tag has no content to skip.
 const FOREIGN = new Set(["svg"]);
+// Raw text ends at the first end tag; other skipped elements can nest.
+const RAW_TEXT = new Set(["script", "style", "noscript", "iframe", "textarea", "title"]);
+// Elements without content, and elements whose end tag may be omitted, so a hidden one has no
+// reliable end to skip to.
+const NO_SKIP_END = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+  "track", "wbr", "p", "li", "dt", "dd", "option", "optgroup", "tr", "td", "th", "thead", "tbody", "tfoot",
+  "colgroup", "caption", "rp", "rt", "html", "head", "body"]);
 const BLOCKS = new Set(["p", "div", "section", "article", "header", "main", "ul", "ol", "table", "tr", "blockquote",
   "figure", "figcaption", "dl", "dt", "dd", "hr"]);
 const WRAPPED = new Set(["pre", "a", "code", "h1", "h2", "h3", "h4", "h5", "h6"]);
@@ -126,6 +145,44 @@ function endTag(lower: string, name: string, from: number): number {
     if (next === undefined || next === ">" || next === "/" || next <= " ") return at;
   }
   return -1;
+}
+
+/** Index after the end tag closing an element opened before `from`, counting nested elements of the same name. */
+function skipElement(lower: string, name: string, from: number): number {
+  const end = (at: number) => { const gt = lower.indexOf(">", at); return gt < 0 ? lower.length : gt + 1; };
+  if (RAW_TEXT.has(name)) { const at = endTag(lower, name, from); return at < 0 ? lower.length : end(at); }
+  const boundary = (at: number) => { const next = lower[at]; return next === undefined || next === ">" || next === "/" || next <= " "; };
+  // Each search continues from the previous match, and a search that finds nothing is not
+  // repeated, so the scan stays linear.
+  const find = (k: number) => {
+    let at = lower.indexOf(`<${name}`, k);
+    while (at >= 0 && !boundary(at + name.length + 1)) at = lower.indexOf(`<${name}`, at + 1);
+    return at < 0 ? Infinity : at;
+  };
+  let depth = 1;
+  let open = find(from);
+  let close = -1;
+  for (let k = from; ;) {
+    if (open < k) open = find(k);
+    if (close < k) close = endTag(lower, name, k);
+    if (close < 0) return lower.length;
+    if (open < close) {
+      const next = end(open);
+      // A self-closed foreign element such as <svg/> has no end tag to wait for.
+      if (!(FOREIGN.has(name) && lower[next - 2] === "/")) depth++;
+      k = next;
+    } else {
+      if (--depth === 0) return end(close);
+      k = end(close);
+    }
+  }
+}
+
+/** A run of backticks longer than any in `code`, so the code cannot close its own fence. */
+function fence(code: string, minimum: number): string {
+  let longest = 0;
+  for (const run of code.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  return "`".repeat(Math.max(minimum, longest + 1));
 }
 
 function link(text: string, href: string | undefined, baseUrl: string): string {
@@ -206,10 +263,12 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
       continue;
     }
     // HTML ignores the self-closing slash on its own elements, so `<script/>` still has content.
-    if (!closing && SKIPPED.has(name) && !(FOREIGN.has(name) && html[gt - 1] === "/")) {
-      const end = endTag(lower, name, i);
-      const gtEnd = end < 0 ? -1 : lower.indexOf(">", end);
-      i = gtEnd < 0 ? to : gtEnd + 1;
+    const selfClosed = FOREIGN.has(name) && html[gt - 1] === "/";
+    // Hidden elements are not rendered; `hidden="until-found"` content can still be revealed by search.
+    const hidden = !closing && !NO_SKIP_END.has(name) && lower.slice(lt, gt).includes("hidden") &&
+      ![undefined, "until-found"].includes(attributes(tagText).get("hidden")?.toLowerCase());
+    if (!closing && !selfClosed && (SKIPPED.has(name) || hidden)) {
+      i = skipElement(lower, name, i);
       continue;
     }
     if (name === "br") out.push("\n");
@@ -219,8 +278,7 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
       const key = REGIONS[name];
       const region = regions[key];
       if (!closing) {
-        const visible = !attributes(tagText).has("hidden");
-        if (++region.depth === 1 && visible) {
+        if (++region.depth === 1) {
           region.count++;
           if (region.state === 0) { region.state = 1; out.push(`\u0001${key}`); }
         }
@@ -244,12 +302,19 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
       const inner = out.splice(element.start).join("");
       if (name === "pre") {
         inPre = false;
-        blocks.push("```\n" + inner.replace(/^\n+/, "").trimEnd() + "\n```");
+        const code = inner.replace(/^\n+/, "").trimEnd();
+        const delimiter = fence(code, 3);
+        blocks.push(`${delimiter}\n${code}\n${delimiter}`);
         out.push(`\n\n\u0000${blocks.length - 1}\u0000\n\n`);
         continue;
       }
       const content = inner.replace(/\s+/g, " ").trim();
-      if (name === "code") out.push(content && "`" + content + "`");
+      if (name === "code") {
+        // Inline code that starts or ends with a backtick needs a space inside its delimiters.
+        const delimiter = fence(content, 1);
+        const pad = content.startsWith("`") || content.endsWith("`") ? " " : "";
+        out.push(content && `${delimiter}${pad}${content}${pad}${delimiter}`);
+      }
       else if (name === "a") out.push(link(content, element.href, base ?? baseUrl));
       else out.push(`\n\n${"#".repeat(Number(name[1]))} ${content}\n\n`);
     }
@@ -423,6 +488,7 @@ export default function webTools(pi: ExtensionAPI) {
         throw new Error(`Unsupported content type ${mime} for ${response.url || url.href}`);
       }
       const { bytes, truncated: downloadTruncated } = await readLimited(response, MAX_DOWNLOAD_BYTES);
+      if (!mime && isBinary(bytes)) throw new Error(`Unsupported binary content for ${response.url || url.href}`);
       const raw = decode(bytes, contentType, !mime || mime.includes("html"));
       const finalUrl = response.url || url.href;
       const isHtml = mime.includes("html") ||
