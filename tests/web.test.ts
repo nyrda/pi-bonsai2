@@ -48,6 +48,9 @@ const server = createServer((req, res) => {
     res.end(Buffer.concat([Buffer.from('<html><head><meta charset="windows-1252"></head><body><p>Caf'), Buffer.from([0xe9]), Buffer.from("</p></body></html>")]));
   } else if (url.pathname === "/fragment") {
     res.end("<body><p>Plain <b>fragment</b></p></body>");
+  } else if (url.pathname === "/svg") {
+    res.writeHead(200, { "Content-Type": "image/svg+xml" });
+    res.end("<svg/>");
   } else if (url.pathname === "/image") {
     res.writeHead(200, { "Content-Type": "image/png" });
     res.end(Buffer.alloc(16));
@@ -129,6 +132,7 @@ test("web_fetch rejects non-HTTP URLs, HTTP errors, and binary content", async (
   await assert.rejects(tools.web_fetch.execute("1", { url: "file:///etc/passwd" }), /Only http/);
   await assert.rejects(tools.web_fetch.execute("2", { url: `${origin}/missing` }), /HTTP 404/);
   await assert.rejects(tools.web_fetch.execute("3", { url: `${origin}/image` }), /Unsupported content type image\/png/);
+  await assert.rejects(tools.web_fetch.execute("4", { url: `${origin}/svg` }), /Unsupported content type image\/svg\+xml/);
 });
 
 test("htmlToText falls back to the body and decodes numeric entities", () => {
@@ -160,4 +164,18 @@ test("htmlToText ignores regions in comments and scripts and resolves links agai
   const html = '<html><head><base href="/docs/"><title>T</title><script>"<main>fake</main>"</script></head>' +
     '<body><!-- <main>old</main> --><header>Site</header><main><a href="intro">Intro</a></main></body></html>';
   assert.deepEqual(htmlToText(html, "https://x.test/app/index.html"), { title: "T", text: "[Intro](https://x.test/docs/intro)" });
+});
+
+test("htmlToText reads attributes and end tags like a browser", () => {
+  const html = '<body><form><main hidden>stale</main><main>' +
+    '<a title="1 > 0" data-href="/preview" href="/real">Docs</a>' +
+    '<script>let s = "</scripture>"; let t = "<b>leak</b>";</script> end</main></form></body>';
+  assert.equal(htmlToText(html, "https://x.test/").text, "[Docs](https://x.test/real) end");
+});
+
+test("htmlToText stays fast after a quote that never closes", () => {
+  const started = performance.now();
+  const { text } = htmlToText(`<p a="x>one</p>${"<i>e</i> ".repeat(500_000)}`, "https://x.test/");
+  assert.ok(performance.now() - started < 2000);
+  assert.match(text, /^one/);
 });

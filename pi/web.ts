@@ -72,13 +72,34 @@ function decodeEntities(text: string): string {
 }
 
 const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
-const SKIPPED = new Set(["script", "style", "noscript", "svg", "template", "nav", "aside", "footer", "form",
-  "iframe", "button", "select", "textarea"]);
+const SKIPPED = new Set(["script", "style", "noscript", "svg", "template", "nav", "aside", "footer", "iframe",
+  "button", "select", "textarea"]);
 // Content regions in order of preference, marked in the output while scanning.
 const REGIONS: Record<string, string> = { main: "m", article: "a", body: "b" };
 const BLOCKS = new Set(["p", "div", "section", "article", "header", "main", "ul", "ol", "table", "tr", "blockquote",
   "figure", "figcaption", "dl", "dt", "dd", "hr"]);
 const WRAPPED = new Set(["pre", "a", "code", "h1", "h2", "h3", "h4", "h5", "h6"]);
+
+// Attribute names must start after whitespace, `/`, or a closing quote, so `data-href` is not `href`.
+const attributePattern = (name: string) =>
+  new RegExp(`[\\s/"']${name}(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+)))?(?=[\\s/>]|$)`, "i");
+const HREF = attributePattern("href");
+const HIDDEN = attributePattern("hidden");
+
+/** Value of an attribute in an opening tag, "" for one without a value, or undefined when absent. */
+function attribute(tag: string, pattern: RegExp): string | undefined {
+  const match = pattern.exec(tag.slice(0, 2048));
+  return match ? match[1] ?? match[2] ?? match[3] ?? "" : undefined;
+}
+
+/** Start of the end tag `</name>`, ignoring longer names such as `</scripture>` for `script`. */
+function endTag(lower: string, name: string, from: number): number {
+  for (let at = lower.indexOf(`</${name}`, from); at >= 0; at = lower.indexOf(`</${name}`, at + 1)) {
+    const next = lower[at + name.length + 2];
+    if (next === undefined || next === ">" || next === "/" || next <= " ") return at;
+  }
+  return -1;
+}
 
 function link(text: string, href: string | undefined, baseUrl: string): string {
   if (!text || !href) return text;
@@ -103,6 +124,23 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
   const open: { name: string; start: number; href?: string }[] = [];
   const blocks: string[] = [];
   let inPre = false;
+  // Find the `>` ending a tag, skipping quoted attribute values. After a quote that never closes,
+  // the rest of the page uses the first `>`, so malformed input is scanned at most once more.
+  let quotesReliable = true;
+  const tagEnd = (lt: number) => {
+    let quote = "";
+    let afterEquals = false;
+    for (let k = lt + 1; quotesReliable && k < to; k++) {
+      const c = html[k];
+      if (quote) { if (c === quote) quote = ""; }
+      else if (c === ">") return k;
+      else if ((c === '"' || c === "'") && afterEquals) quote = c;
+      else if (c === "=") { afterEquals = true; continue; }
+      if (c > " ") afterEquals = false;
+    }
+    if (quote) quotesReliable = false;
+    return html.indexOf(">", lt + 1);
+  };
   // Text is decoded once and never parsed again. NUL marks code block placeholders and SOH
   // marks content regions, so both are removed from page text.
   const text = (raw: string) => {
@@ -118,27 +156,28 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
       i = end < 0 ? to : end + 3;
       continue;
     }
-    const gt = html.indexOf(">", lt + 1);
-    if (gt < 0 || gt >= to) { text(html.slice(lt, to)); break; }
+    const gt = tagEnd(lt);
+    if (gt < 0) { text(html.slice(lt, to)); break; }
     i = gt + 1;
     if (html[lt + 1] === "!" || html[lt + 1] === "?") continue;
     const tag = /^<(\/?)([a-z][a-z0-9-]*)/.exec(lower.slice(lt, Math.min(gt, lt + 40)));
     if (!tag) { text(html.slice(lt, i)); continue; }
     const [, closing, name] = tag;
+    const attributes = html.slice(lt, gt);
     if (!closing && name === "title") {
-      const end = lower.indexOf("</title", i);
+      const end = endTag(lower, "title", i);
       if (!title) title = clip(decodeEntities(html.slice(i, end < 0 ? to : end)).replace(/\s+/g, " ").trim(), 300);
       if (end >= 0) i = end;
       continue;
     }
     if (!closing && name === "base" && base === undefined) {
-      const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(html.slice(lt, Math.min(i, lt + 2048)));
-      try { base = href ? new URL(decodeEntities(href[1] ?? href[2] ?? href[3]), baseUrl).href : undefined; }
+      const href = attribute(attributes, HREF);
+      try { base = href ? new URL(decodeEntities(href), baseUrl).href : undefined; }
       catch { base = undefined; }
       continue;
     }
     if (!closing && SKIPPED.has(name) && html[gt - 1] !== "/") {
-      const end = lower.indexOf(`</${name}`, i);
+      const end = endTag(lower, name, i);
       const gtEnd = end < 0 ? -1 : lower.indexOf(">", end);
       i = gtEnd < 0 ? to : gtEnd + 1;
       continue;
@@ -146,10 +185,13 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     if (name === "br") out.push("\n");
     else if (inPre && name !== "pre") continue;
     else if (name in REGIONS) {
-      // Only the first element of each kind counts; a close before its open is ignored.
+      // Only the first visible element of each kind counts; a close before its open is ignored.
       const key = REGIONS[name];
       const marker = closing ? key.toUpperCase() : key;
-      if (closing ? regions.has(key) && !regions.has(marker) : !regions.has(key)) {
+      const counts = closing
+        ? regions.has(key) && !regions.has(marker)
+        : !regions.has(key) && attribute(attributes, HIDDEN) === undefined;
+      if (counts) {
         regions.add(marker);
         out.push(`\u0001${marker}`);
       }
@@ -160,10 +202,7 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     else if (BLOCKS.has(name)) out.push("\n\n");
     else if (WRAPPED.has(name) && !closing) {
       if (inPre || open.length >= 64) continue;
-      const href = name === "a"
-        ? /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(html.slice(lt, Math.min(i, lt + 2048)))
-        : null;
-      open.push({ name, start: out.length, href: href ? href[1] ?? href[2] ?? href[3] : undefined });
+      open.push({ name, start: out.length, href: name === "a" ? attribute(attributes, HREF) : undefined });
       inPre ||= name === "pre";
     } else if (WRAPPED.has(name)) {
       const index = open.findLastIndex(element => element.name === name);
@@ -343,7 +382,8 @@ export default function webTools(pi: ExtensionAPI) {
         throw new Error(`HTTP ${response.status} ${response.statusText} for ${response.url || url.href}`);
       }
       const mime = contentType.split(";")[0].trim().toLowerCase();
-      const textual = !mime || mime.startsWith("text/") || /[+/](json|xml)$/.test(mime) || mime === "application/javascript";
+      const textual = !mime || mime.startsWith("text/") || mime === "application/javascript" ||
+        (!mime.startsWith("image/") && /[+/](json|xml)$/.test(mime));
       if (!textual) {
         await response.body?.cancel();
         throw new Error(`Unsupported content type ${mime} for ${response.url || url.href}`);
