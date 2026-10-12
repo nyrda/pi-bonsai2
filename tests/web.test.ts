@@ -13,7 +13,7 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
-const { default: webTools, htmlToText, formatSearch } = await import("../pi/web.ts");
+const { default: webTools, htmlToText, formatSearch, attributes } = await import("../pi/web.ts");
 
 const singleLine = "x".repeat(60_000);
 const longText = Array.from({ length: 4000 }, (_, i) => `line ${i} of the long page`).join("\n");
@@ -178,4 +178,19 @@ test("htmlToText stays fast after a quote that never closes", () => {
   const { text } = htmlToText(`<p a="x>one</p>${"<i>e</i> ".repeat(500_000)}`, "https://x.test/");
   assert.ok(performance.now() - started < 2000);
   assert.match(text, /^one/);
+});
+
+test("attributes are read in order, so names inside quoted values do not count", () => {
+  const read = attributes(`<a title="prefix href=/wrong" data-href='/preview' href = /right hidden`);
+  assert.equal(read.get("href"), "/right");
+  assert.equal(read.get("hidden"), "");
+  assert.equal(read.get("title"), "prefix href=/wrong");
+});
+
+test("htmlToText keeps nested and sibling articles and skips self-closed scripts", () => {
+  const post = "<body><nav>Menu</nav><article><p>Post</p><article>Comment</article><p>More</p></article>" +
+    "<script/>alert(1)</script></body>";
+  assert.equal(htmlToText(post, "https://x.test/").text, "Post\n\nComment\n\nMore");
+  const listing = "<body><h1>News</h1><article>One</article><article>Two</article></body>";
+  assert.equal(htmlToText(listing, "https://x.test/").text, "# News\n\nOne\n\nTwo");
 });

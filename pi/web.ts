@@ -76,20 +76,47 @@ const SKIPPED = new Set(["script", "style", "noscript", "svg", "template", "nav"
   "button", "select", "textarea"]);
 // Content regions in order of preference, marked in the output while scanning.
 const REGIONS: Record<string, string> = { main: "m", article: "a", body: "b" };
+// Elements from other namespaces, where a self-closing tag has no content to skip.
+const FOREIGN = new Set(["svg"]);
 const BLOCKS = new Set(["p", "div", "section", "article", "header", "main", "ul", "ol", "table", "tr", "blockquote",
   "figure", "figcaption", "dl", "dt", "dd", "hr"]);
 const WRAPPED = new Set(["pre", "a", "code", "h1", "h2", "h3", "h4", "h5", "h6"]);
 
-// Attribute names must start after whitespace, `/`, or a closing quote, so `data-href` is not `href`.
-const attributePattern = (name: string) =>
-  new RegExp(`[\\s/"']${name}(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+)))?(?=[\\s/>]|$)`, "i");
-const HREF = attributePattern("href");
-const HIDDEN = attributePattern("hidden");
-
-/** Value of an attribute in an opening tag, "" for one without a value, or undefined when absent. */
-function attribute(tag: string, pattern: RegExp): string | undefined {
-  const match = pattern.exec(tag.slice(0, 2048));
-  return match ? match[1] ?? match[2] ?? match[3] ?? "" : undefined;
+/**
+ * Attributes of an opening tag such as `<a href="x">` without its `>`, read in order like a browser,
+ * so names inside quoted values are not attributes. Only the first 4 KiB of a tag is read.
+ */
+export function attributes(tag: string): Map<string, string> {
+  const text = tag.slice(0, 4096);
+  const result = new Map<string, string>();
+  const space = (k: number) => text[k] <= " " || text[k] === "/";
+  let k = 1;
+  while (k < text.length && !space(k)) k++;
+  while (k < text.length) {
+    while (k < text.length && space(k)) k++;
+    let end = k + 1;
+    while (end < text.length && !space(end) && text[end] !== "=") end++;
+    const name = text.slice(k, end).toLowerCase();
+    k = end;
+    while (k < text.length && text[k] <= " ") k++;
+    let value = "";
+    if (text[k] === "=") {
+      k++;
+      while (k < text.length && text[k] <= " ") k++;
+      const quote = text[k];
+      if (quote === '"' || quote === "'") {
+        const close = text.indexOf(quote, k + 1);
+        value = text.slice(k + 1, close < 0 ? text.length : close);
+        k = close < 0 ? text.length : close + 1;
+      } else {
+        const start = k;
+        while (k < text.length && text[k] > " ") k++;
+        value = text.slice(start, k);
+      }
+    }
+    if (name && !result.has(name)) result.set(name, value);
+  }
+  return result;
 }
 
 /** Start of the end tag `</name>`, ignoring longer names such as `</scripture>` for `script`. */
@@ -119,7 +146,9 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
   const to = html.length;
   let title = "";
   let base: string | undefined;
-  const regions = new Set<string>();
+  // Per region kind: nesting depth, visible top-level elements, and whether the first visible one
+  // is still open (1) or closed (2).
+  const regions = Object.fromEntries(Object.values(REGIONS).map(key => [key, { depth: 0, count: 0, state: 0 }]));
   const out: string[] = [];
   const open: { name: string; start: number; href?: string }[] = [];
   const blocks: string[] = [];
@@ -163,7 +192,7 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     const tag = /^<(\/?)([a-z][a-z0-9-]*)/.exec(lower.slice(lt, Math.min(gt, lt + 40)));
     if (!tag) { text(html.slice(lt, i)); continue; }
     const [, closing, name] = tag;
-    const attributes = html.slice(lt, gt);
+    const tagText = html.slice(lt, gt);
     if (!closing && name === "title") {
       const end = endTag(lower, "title", i);
       if (!title) title = clip(decodeEntities(html.slice(i, end < 0 ? to : end)).replace(/\s+/g, " ").trim(), 300);
@@ -171,12 +200,13 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
       continue;
     }
     if (!closing && name === "base" && base === undefined) {
-      const href = attribute(attributes, HREF);
+      const href = attributes(tagText).get("href");
       try { base = href ? new URL(decodeEntities(href), baseUrl).href : undefined; }
       catch { base = undefined; }
       continue;
     }
-    if (!closing && SKIPPED.has(name) && html[gt - 1] !== "/") {
+    // HTML ignores the self-closing slash on its own elements, so `<script/>` still has content.
+    if (!closing && SKIPPED.has(name) && !(FOREIGN.has(name) && html[gt - 1] === "/")) {
       const end = endTag(lower, name, i);
       const gtEnd = end < 0 ? -1 : lower.indexOf(">", end);
       i = gtEnd < 0 ? to : gtEnd + 1;
@@ -185,15 +215,18 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     if (name === "br") out.push("\n");
     else if (inPre && name !== "pre") continue;
     else if (name in REGIONS) {
-      // Only the first visible element of each kind counts; a close before its open is ignored.
+      // The first visible top-level element of each kind is marked, ending at its own end tag.
       const key = REGIONS[name];
-      const marker = closing ? key.toUpperCase() : key;
-      const counts = closing
-        ? regions.has(key) && !regions.has(marker)
-        : !regions.has(key) && attribute(attributes, HIDDEN) === undefined;
-      if (counts) {
-        regions.add(marker);
-        out.push(`\u0001${marker}`);
+      const region = regions[key];
+      if (!closing) {
+        const visible = !attributes(tagText).has("hidden");
+        if (++region.depth === 1 && visible) {
+          region.count++;
+          if (region.state === 0) { region.state = 1; out.push(`\u0001${key}`); }
+        }
+      } else if (region.depth > 0) {
+        if (region.depth === 1 && region.state === 1) { region.state = 2; out.push(`\u0001${key.toUpperCase()}`); }
+        region.depth--;
       }
       out.push("\n\n");
     }
@@ -202,7 +235,7 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     else if (BLOCKS.has(name)) out.push("\n\n");
     else if (WRAPPED.has(name) && !closing) {
       if (inPre || open.length >= 64) continue;
-      open.push({ name, start: out.length, href: name === "a" ? attribute(attributes, HREF) : undefined });
+      open.push({ name, start: out.length, href: name === "a" ? attributes(tagText).get("href") : undefined });
       inPre ||= name === "pre";
     } else if (WRAPPED.has(name)) {
       const index = open.findLastIndex(element => element.name === name);
@@ -222,10 +255,11 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
     }
   }
   let joined = out.join("");
-  // Prefer the main content when the page marks it.
+  // Prefer the main content when the page marks it. Several top-level articles form a listing,
+  // so keep the body around them.
   for (const key of ["m", "a", "b"]) {
     const start = joined.indexOf(`\u0001${key}`);
-    if (start < 0) continue;
+    if (start < 0 || (key === "a" && regions.a.count > 1)) continue;
     const end = joined.indexOf(`\u0001${key.toUpperCase()}`, start);
     joined = joined.slice(start, end < 0 ? joined.length : end);
     break;
