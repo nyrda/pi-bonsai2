@@ -1,0 +1,12 @@
+{
+  "name": "pi-bonsai2-web",
+  "private": true,
+  "type": "module",
+  "description": "Libraries for the pi-bonsai2 web_fetch tool",
+  "dependencies": {
+    "@mozilla/readability": "0.6.0",
+    "linkedom": "0.18.13",
+    "turndown": "7.2.4",
+    "turndown-plugin-gfm": "1.0.2"
+  }
+}

@@ -4,7 +4,8 @@ import { registerHooks } from "node:module";
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 
-// Pi supplies TypeBox at runtime; the tools only pass its schemas through.
+// Pi supplies TypeBox at runtime; the tools only pass its schemas through. The HTML libraries
+// come from pi/node_modules.
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "typebox") {
@@ -13,7 +14,7 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
-const { default: webTools, htmlToText, formatSearch, attributes } = await import("../pi/web.ts");
+const { default: webTools, htmlToMarkdown, formatSearch } = await import("../pi/web.ts");
 
 const singleLine = "x".repeat(60_000);
 const longText = Array.from({ length: 4000 }, (_, i) => `line ${i} of the long page`).join("\n");
@@ -48,6 +49,9 @@ const server = createServer((req, res) => {
     res.end(Buffer.concat([Buffer.from('<html><head><meta charset="windows-1252"></head><body><p>Caf'), Buffer.from([0xe9]), Buffer.from("</p></body></html>")]));
   } else if (url.pathname === "/fragment") {
     res.end("<body><p>Plain <b>fragment</b></p></body>");
+  } else if (url.pathname === "/huge") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("<html><body><article>" + "<p>Lorem ipsum <a href='/x'>dolor</a> sit amet.</p>".repeat(30_000) + "</article></body></html>");
   } else if (url.pathname === "/svg") {
     res.writeHead(200, { "Content-Type": "image/svg+xml" });
     res.end("<svg/>");
@@ -96,8 +100,8 @@ test("web_fetch converts HTML to readable text with absolute links", async () =>
   const { tools } = setup({ BONSAI_WEB: undefined });
   const output = text(await tools.web_fetch.execute("1", { url: `${origin}/page` }));
   assert.match(output, /^URL: http:\/\/127\.0\.0\.1:\d+\/page\nTitle: Café & Co\n/);
-  assert.match(output, /## Menu\n\nHot drinks — see \[the list\]\(http:\/\/127\.0\.0\.1:\d+\/drinks\)\./);
-  assert.match(output, /- Tea\n- Coffee/);
+  assert.match(output, /## Menu\n\nHot\s+drinks — see \[the list\]\(http:\/\/127\.0\.0\.1:\d+\/drinks\)\./);
+  assert.match(output, /- +Tea\n- +Coffee/);
   assert.match(output, /```\nx {2}= {2}1\n {2}y\n```/);
   assert.doesNotMatch(output, /alert|Home|Footer/);
 });
@@ -124,7 +128,7 @@ test("web_fetch resumes a line cut in the middle instead of skipping it", async 
 test("web_fetch honors a <meta> charset and converts HTML sent without a content type", async () => {
   const { tools } = setup({ BONSAI_WEB: undefined });
   assert.match(text(await tools.web_fetch.execute("1", { url: `${origin}/legacy` })), /\n\nCafé$/);
-  assert.match(text(await tools.web_fetch.execute("2", { url: `${origin}/fragment` })), /\n\nPlain fragment$/);
+  assert.match(text(await tools.web_fetch.execute("2", { url: `${origin}/fragment` })), /\n\nPlain \*\*fragment\*\*$/);
 });
 
 test("web_fetch rejects non-HTTP URLs, HTTP errors, and binary content", async () => {
@@ -135,21 +139,12 @@ test("web_fetch rejects non-HTTP URLs, HTTP errors, and binary content", async (
   await assert.rejects(tools.web_fetch.execute("4", { url: `${origin}/svg` }), /Unsupported content type image\/svg\+xml/);
 });
 
-test("htmlToText falls back to the body and decodes numeric entities", () => {
-  const { title, text } = htmlToText("<body><p>A&#x27;s</p><table><tr><td>1</td><td>2</td></tr></table></body>", "https://x.test/");
-  assert.equal(title, "");
-  assert.equal(text, "A's\n\n1 | 2 |");
-});
-
-test("htmlToText keeps escaped markup in inline code and link text", () => {
-  const { text } = htmlToText('<p>Use <code>Array&lt;string&gt;</code> or <a href="/t">&lt;T&gt;</a>.</p>', "https://x.test/");
-  assert.equal(text, "Use `Array<string>` or [<T>](https://x.test/t).");
-});
-
-test("htmlToText stays fast on malformed markup", () => {
+test("web_fetch converts only the first MiB of a huge page", async () => {
+  const { tools } = setup({ BONSAI_WEB: undefined });
   const started = performance.now();
-  htmlToText("<p>" + "<".repeat(1_000_000) + "<script>".repeat(100_000) + "<h1><a href='".repeat(100_000), "https://x.test/");
-  assert.ok(performance.now() - started < 2000);
+  const output = text(await tools.web_fetch.execute("1", { url: `${origin}/huge` }));
+  assert.ok(performance.now() - started < 10_000);
+  assert.match(output, /\[Converted only the first 1 MiB of HTML\.\]$/);
 });
 
 test("formatSearch clips long fields from the instance", () => {
@@ -160,37 +155,20 @@ test("formatSearch clips long fields from the instance", () => {
   assert.ok(output.length < 3000);
 });
 
-test("htmlToText ignores regions in comments and scripts and resolves links against <base>", () => {
-  const html = '<html><head><base href="/docs/"><title>T</title><script>"<main>fake</main>"</script></head>' +
-    '<body><!-- <main>old</main> --><header>Site</header><main><a href="intro">Intro</a></main></body></html>';
-  assert.deepEqual(htmlToText(html, "https://x.test/app/index.html"), { title: "T", text: "[Intro](https://x.test/docs/intro)" });
+test("htmlToMarkdown keeps the article with absolute links, tables, and code", async () => {
+  const html = '<html><head><title>Guide</title><base href="/docs/"></head><body><nav>Menu</nav><article>' +
+    '<h2>Setup</h2><p>Read <a href="intro" title="Intro page">the intro</a> first. ' + "Long enough text. ".repeat(40) +
+    '<img src="/logo.png" alt="Logo"></p><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>' +
+    "<pre>x = ```\n  y</pre><pre><code>let z = 1;</code></pre></article><footer>Footer</footer><script>evil()</script></body></html>";
+  const { title, text } = await htmlToMarkdown(html, "https://x.test/app/index.html");
+  assert.equal(title, "Guide");
+  assert.match(text, /^## Setup\n\nRead \[the intro\]\(https:\/\/x\.test\/docs\/intro\) first\./);
+  assert.match(text, /Logo\n\n\| a \| b \|\n\| --- \| --- \|\n\| 1 \| 2 \|/);
+  assert.match(text, /\n````\nx = ```\n  y\n````\n\n```\nlet z = 1;\n```$/);
+  assert.doesNotMatch(text, /Menu|Footer|evil|logo\.png|Intro page/);
 });
 
-test("htmlToText reads attributes and end tags like a browser", () => {
-  const html = '<body><form><main hidden>stale</main><main>' +
-    '<a title="1 > 0" data-href="/preview" href="/real">Docs</a>' +
-    '<script>let s = "</scripture>"; let t = "<b>leak</b>";</script> end</main></form></body>';
-  assert.equal(htmlToText(html, "https://x.test/").text, "[Docs](https://x.test/real) end");
-});
-
-test("htmlToText stays fast after a quote that never closes", () => {
-  const started = performance.now();
-  const { text } = htmlToText(`<p a="x>one</p>${"<i>e</i> ".repeat(500_000)}`, "https://x.test/");
-  assert.ok(performance.now() - started < 2000);
-  assert.match(text, /^one/);
-});
-
-test("attributes are read in order, so names inside quoted values do not count", () => {
-  const read = attributes(`<a title="prefix href=/wrong" data-href='/preview' href = /right hidden`);
-  assert.equal(read.get("href"), "/right");
-  assert.equal(read.get("hidden"), "");
-  assert.equal(read.get("title"), "prefix href=/wrong");
-});
-
-test("htmlToText keeps nested and sibling articles and skips self-closed scripts", () => {
-  const post = "<body><nav>Menu</nav><article><p>Post</p><article>Comment</article><p>More</p></article>" +
-    "<script/>alert(1)</script></body>";
-  assert.equal(htmlToText(post, "https://x.test/").text, "Post\n\nComment\n\nMore");
-  const listing = "<body><h1>News</h1><article>One</article><article>Two</article></body>";
-  assert.equal(htmlToText(listing, "https://x.test/").text, "# News\n\nOne\n\nTwo");
+test("htmlToMarkdown converts fragments and leaves out hidden elements", async () => {
+  const html = '<p>Use <code>Array&lt;string&gt;</code></p><div hidden>stale</div>';
+  assert.deepEqual(await htmlToMarkdown(html, "https://x.test/"), { title: "", text: "Use `Array<string>`" });
 });
