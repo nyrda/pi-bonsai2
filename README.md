@@ -52,9 +52,10 @@ nix run github:nyrda/pi-bonsai2
 ```
 
 The default installation downloads MTP weights, about 8.3 GB including the shared
-vision projector, plus the runtime dependencies. The installed program runs
-offline and starts its own authenticated backend on a local, automatically chosen
-port. Closing Pi stops that backend and releases its GPU memory.
+vision projector, plus the runtime dependencies. The installed program needs no
+network for inference and starts its own authenticated backend on a local,
+automatically chosen port. Only the [web tools](#web-search-and-fetch) access the
+internet, when the model calls them. Closing Pi stops that backend and releases its GPU memory.
 
 ```sh
 # Images can be attached in Pi or passed on the command line.
@@ -135,6 +136,25 @@ The default context is 131,072 tokens with an 8-bit KV cache and a 128-token
 physical batch. Pi knows the same context limit, allows up to 8,192 output tokens,
 and initially caps medium reasoning at 2,048 tokens to leave room for an answer.
 
+## Web search and fetch
+
+Pi gets a `web_fetch` tool that downloads a web page or text file and converts
+HTML to Markdown-like text with headings, lists, links, and code blocks. Pages
+longer than 40,000 characters are saved to a temporary file that Pi can read
+further; these files are removed when Pi exits.
+
+`web_search` queries a [SearXNG](https://docs.searxng.org/) instance you choose.
+It is available only when `BONSAI_SEARXNG_URL` is set:
+
+```sh
+BONSAI_SEARXNG_URL=https://searx.example.org pi-bonsai2
+```
+
+The instance must allow JSON output: include `json` under `search.formats` in its
+`settings.yml`. Most public instances do not, so use your own instance.
+
+Set `BONSAI_WEB=0` to disable both tools and keep Pi off the network.
+
 ## Run the backend separately
 
 ```sh
@@ -161,6 +181,8 @@ managed servers running. Set `BONSAI_API_KEY` when connecting to an authenticate
 | `BONSAI_PORT` | `28743` | Standalone backend port; automatic for the Pi-managed backend |
 | `BONSAI_BASE_URL` | unset | Connect Pi to an existing backend instead of starting one |
 | `BONSAI_AGENT_DIR` | XDG data directory | Isolated Pi settings and sessions |
+| `BONSAI_SEARXNG_URL` | unset | SearXNG base URL that enables the `web_search` tool |
+| `BONSAI_WEB` | `1` | Set to `0` to disable `web_search` and `web_fetch` |
 
 To disable vision and reduce GPU memory use:
 
@@ -208,7 +230,7 @@ nix run github:nyrda/pi-bonsai2#validate
 ```
 
 `flake check` tests profile isolation, startup failures, exit codes, backend
-cleanup, provider model switching, and the live speed indicator without a GPU. The default validation tests the MTP model.
+cleanup, provider model switching, the live speed indicator, and the web tools without a GPU. The default validation tests the MTP model.
 Use `nix run github:nyrda/pi-bonsai2#validate-both` to explicitly download and test
 original PQ2 and PTQ1. `validate.py` checks arithmetic, image understanding through the
 API and Pi, and a Pi `read` tool call that retrieves a randomly generated value. It records request timings in
@@ -233,7 +255,7 @@ nix flake check
 To add a variant, add its repository, revision, filename, SHA-256, label, and
 vision support to `nix/variants.json`. The server and Pi use the same registry.
 
-CI runs formatting, lint, launcher and speed-indicator tests, and a dependency check that keeps PTQ1
+CI runs formatting, lint, launcher, speed-indicator, and web tool tests, and a dependency check that keeps PTQ1
 out of the default installation. It needs neither a GPU nor model downloads.
 Run `nix run .#validate` separately for GPU inference checks.
 
