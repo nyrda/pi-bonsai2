@@ -90,6 +90,7 @@
             cp ${./pi/provider.ts} $out/share/pi-bonsai2/provider.ts
             cp ${./nix/variants.json} $out/share/pi-bonsai2/variants.json
             cp ${./pi/speed.ts} $out/share/pi-bonsai2/speed.ts
+            cp ${./pi/web.ts} $out/share/pi-bonsai2/web.ts
             substitute ${./scripts/pi-bonsai2.py} $out/bin/pi-bonsai2 \
               --replace-fail '@python@' '${pkgs.python3}/bin/python3' \
               --replace-fail '@server@' '${backend}/bin/bonsai2-server' \

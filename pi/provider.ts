@@ -2,10 +2,12 @@ import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { openAICompletionsApi } from "@earendil-works/pi-ai";
 import generationSpeed from "./speed.ts";
+import webTools from "./web.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   const withTimings = generationSpeed(pi);
+  webTools(pi);
   const variant = process.env.BONSAI_VARIANT || "abliterated-mtp";
   const registry: Record<string, { label: string; vision: boolean; runtime?: string }> = JSON.parse(
     readFileSync(new URL("./variants.json", import.meta.url), "utf8"),

@@ -9,6 +9,9 @@ registerHooks({
     if (specifier === "@earendil-works/pi-ai") {
       return { url: "data:text/javascript,export const openAICompletionsApi = () => { throw Error('Unexpected inference'); };", shortCircuit: true };
     }
+    if (specifier === "typebox") {
+      return { url: "data:text/javascript,export const Type = new Proxy({}, { get: () => (...args) => args });", shortCircuit: true };
+    }
     return nextResolve(specifier, context);
   },
 });
@@ -22,6 +25,7 @@ function setup() {
   provider({
     on(name, handler) { (events[name] ??= []).push(handler); },
     registerCommand(name, command) { commands[name] = command; },
+    registerTool() {},
     registerProvider(_name, value) { config = value; },
     async setModel(model) { selected = model; return true; },
   } as any);
