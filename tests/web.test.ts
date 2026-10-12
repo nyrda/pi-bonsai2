@@ -173,3 +173,10 @@ test("htmlToMarkdown converts fragments and leaves out hidden elements", async (
   const html = '<p>Use <code>Array&lt;string&gt;</code></p><div hidden>stale</div>';
   assert.deepEqual(await htmlToMarkdown(html, "https://x.test/"), { title: "", text: "Use `Array<string>`" });
 });
+
+test("htmlToMarkdown keeps inline runs together when converting large content in blocks", async () => {
+  const text = "Hello <em>world</em>, see <a href='/x'>this</a>.<br>".repeat(2000);
+  const { text: markdown } = await htmlToMarkdown(`<body>${text}<p>End</p></body>`, "https://x.test/");
+  assert.match(markdown, /^Hello _world_, see \[this\]\(https:\/\/x\.test\/x\)\. {2}\nHello _world_/);
+  assert.match(markdown, /\n\nEnd$/);
+});

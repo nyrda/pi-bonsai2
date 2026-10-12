@@ -83,6 +83,9 @@ function loadLibraries() {
 const oneLine = (text: unknown) => String(text ?? "").replace(/\s+/g, " ").trim();
 // Elements that only wrap content, which large content is split below.
 const WRAPPERS = new Set(["DIV", "SECTION", "ARTICLE", "MAIN"]);
+// Block elements, between which large content is split.
+const BLOCKS = new Set([...WRAPPERS, "P", "PRE", "TABLE", "UL", "OL", "DL", "BLOCKQUOTE", "FIGURE", "HR", "HEADER",
+  "H1", "H2", "H3", "H4", "H5", "H6"]);
 
 /**
  * Convert an HTML page to Markdown. Mozilla Readability selects the main content as Firefox's
@@ -129,11 +132,26 @@ export async function htmlToMarkdown(html: string, url: string): Promise<{ title
   const content = root.outerHTML;
   if (content.length <= 64 * 1024) return { title, text: convert(content, root) };
   while (root.children.length === 1 && WRAPPERS.has(root.children[0].nodeName)) root = root.children[0];
+  // Adjacent text and inline elements form one paragraph, so they are converted together.
   const parts: string[] = [];
-  for (const node of root.childNodes) {
-    const markdown = node.nodeType === 1 ? convert(node.outerHTML, node) : oneLine(node.textContent);
+  let inline = "";
+  const flush = () => {
+    const markdown = inline && convert(`<p>${inline}</p>`, root);
     if (markdown) parts.push(markdown);
+    inline = "";
+  };
+  for (const node of root.childNodes) {
+    if (node.nodeType === 1 && BLOCKS.has(node.nodeName)) {
+      flush();
+      const markdown = convert(node.outerHTML, node);
+      if (markdown) parts.push(markdown);
+    } else if (node.nodeType === 1) {
+      inline += node.outerHTML;
+    } else if (node.nodeType === 3) {
+      inline += node.textContent.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    }
   }
+  flush();
   return { title, text: parts.join("\n\n") };
 }
 
