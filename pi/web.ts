@@ -36,13 +36,16 @@ async function readLimited(response: Response, limit: number): Promise<{ bytes: 
   return { bytes, truncated };
 }
 
-// PDF, ZIP, gzip, PNG, GIF, JPEG, and RIFF (WebP, WAV, AVI) file signatures.
-const SIGNATURES = [[0x25, 0x50, 0x44, 0x46, 0x2d], [0x50, 0x4b, 0x03, 0x04], [0x1f, 0x8b], [0x89, 0x50, 0x4e, 0x47],
-  [0x47, 0x49, 0x46, 0x38], [0xff, 0xd8, 0xff], [0x52, 0x49, 0x46, 0x46]];
+// PDF, ZIP, gzip, PNG, GIF, JPEG, and RIFF WebP, WAV, and AVI file signatures, as bytes from the
+// start of the file; null matches any byte (the RIFF chunk size).
+const ascii = (text: string) => [...text].map(c => c.charCodeAt(0));
+const SIGNATURES: (number | null)[][] = [ascii("%PDF-"), [0x50, 0x4b, 0x03, 0x04], [0x1f, 0x8b], [0x89, ...ascii("PNG")],
+  ascii("GIF87a"), ascii("GIF89a"), [0xff, 0xd8, 0xff],
+  ...["WEBP", "WAVE", "AVI "].map(form => [...ascii("RIFF"), null, null, null, null, ...ascii(form)])];
 
 /** Whether untyped content is binary: a known file signature or a NUL byte near the start. */
 function isBinary(bytes: Uint8Array): boolean {
-  return SIGNATURES.some(signature => signature.every((byte, index) => bytes[index] === byte)) ||
+  return SIGNATURES.some(signature => signature.every((byte, index) => byte === null || bytes[index] === byte)) ||
     bytes.subarray(0, 1024).includes(0);
 }
 
@@ -76,7 +79,10 @@ const C1 = "\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u
   "\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178";
 
 function decodeEntities(text: string): string {
-  return text.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z][a-z0-9]{1,31});/gi, (match, name: string) => {
+  // Numeric references may omit their semicolon, as HTML allows.
+  const reference = /&(?:(#x[0-9a-f]{1,6}|#\d{1,7});?|([a-z][a-z0-9]{1,31});)/gi;
+  return text.replace(reference, (match, number?: string, named?: string) => {
+    const name = number ?? named!;
     if (name[0] === "#") {
       const code = name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
       if (code >= 0x80 && code <= 0x9f) return C1[code - 0x80];
@@ -93,14 +99,13 @@ const SKIPPED = new Set(["script", "style", "noscript", "svg", "template", "nav"
 // Content regions in order of preference, marked in the output while scanning.
 const REGIONS: Record<string, string> = { main: "m", article: "a", body: "b" };
 // Elements from other namespaces, where a self-closing tag has no content to skip.
-const FOREIGN = new Set(["svg"]);
+const FOREIGN = new Set(["svg", "math"]);
 // Raw text ends at the first end tag; other skipped elements can nest.
 const RAW_TEXT = new Set(["script", "style", "noscript", "iframe", "textarea", "title"]);
-// Elements without content, and elements whose end tag may be omitted, so a hidden one has no
-// reliable end to skip to.
-const NO_SKIP_END = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
-  "track", "wbr", "p", "li", "dt", "dd", "option", "optgroup", "tr", "td", "th", "thead", "tbody", "tfoot",
-  "colgroup", "caption", "rp", "rt", "html", "head", "body"]);
+// Containers that other start tags never close implicitly, so a hidden one ends at its own end tag.
+// Other hidden elements are kept rather than risking the loss of visible content after them.
+const HIDEABLE = new Set(["div", "section", "article", "main", "header", "span", "details", "dialog", "figure",
+  "blockquote", "ul", "ol", "dl", "table", "form", "fieldset"]);
 const BLOCKS = new Set(["p", "div", "section", "article", "header", "main", "ul", "ol", "table", "tr", "blockquote",
   "figure", "figcaption", "dl", "dt", "dd", "hr"]);
 const WRAPPED = new Set(["pre", "a", "code", "h1", "h2", "h3", "h4", "h5", "h6"]);
@@ -256,7 +261,7 @@ export function htmlToText(html: string, baseUrl: string, xml = false): { title:
       continue;
     }
     // Hidden elements are not rendered; `hidden="until-found"` content can still be revealed by search.
-    const hiddenValue = !closing && !NO_SKIP_END.has(name) && lower.slice(lt, gt).includes("hidden")
+    const hiddenValue = !closing && HIDEABLE.has(name) && lower.slice(lt, gt).includes("hidden")
       ? attributes(tagText).get("hidden") : undefined;
     const hidden = hiddenValue !== undefined && decodeEntities(hiddenValue).trim().toLowerCase() !== "until-found";
     if (!closing && !selfClosed && (SKIPPED.has(name) || hidden)) {

@@ -52,6 +52,8 @@ const server = createServer((req, res) => {
     res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]));
   } else if (url.pathname === "/untyped-gzip") {
     res.end(Buffer.from([0x1f, 0x8b, 0x08, 0x08, 0x41, 0x42, 0x43, 0x44]));
+  } else if (url.pathname === "/untyped-text") {
+    res.end("RIFF is the Resource Interchange File Format. GIF8 is not a GIF either.");
   } else if (url.pathname === "/svg") {
     res.writeHead(200, { "Content-Type": "image/svg+xml" });
     res.end("<svg/>");
@@ -139,6 +141,7 @@ test("web_fetch rejects non-HTTP URLs, HTTP errors, and binary content", async (
   await assert.rejects(tools.web_fetch.execute("4", { url: `${origin}/svg` }), /Unsupported content type image\/svg\+xml/);
   await assert.rejects(tools.web_fetch.execute("5", { url: `${origin}/untyped-png` }), /Unsupported binary content/);
   await assert.rejects(tools.web_fetch.execute("6", { url: `${origin}/untyped-gzip` }), /Unsupported binary content/);
+  assert.match(text(await tools.web_fetch.execute("7", { url: `${origin}/untyped-text` })), /RIFF is the Resource/);
 });
 
 test("htmlToText falls back to the body and decodes numeric entities", () => {
@@ -228,4 +231,9 @@ test("htmlToText counts only real tags while skipping hidden elements", () => {
 
 test("htmlToText treats self-closing tags in XHTML as empty", () => {
   assert.equal(htmlToText('<div hidden="hidden"/><p>visible</p>', "https://x.test/", true).text, "visible");
+});
+
+test("htmlToText keeps content after hidden elements that close implicitly or are empty", () => {
+  const html = '<h1 hidden>old<h2>New</h2><math hidden/><p>Body</p><div hidden="until&#45found">Found</div>';
+  assert.equal(htmlToText(html, "https://x.test/").text, "old\n\n## New\n\nBody\n\nFound");
 });
