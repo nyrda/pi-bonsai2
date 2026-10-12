@@ -138,8 +138,11 @@ and initially caps medium reasoning at 2,048 tokens to leave room for an answer.
 
 ## Web search and fetch
 
-Pi gets a `web_fetch` tool that downloads a web page or text file and converts
-HTML to Markdown-like text with headings, lists, links, and code blocks. Pages
+Pi gets a `web_fetch` tool that downloads a web page or text file. HTML pages are
+reduced to their main content with [Mozilla Readability](https://github.com/mozilla/readability),
+the library behind Firefox's reader view, and converted to Markdown with
+[turndown](https://github.com/mixmark-io/turndown), keeping headings, lists, links,
+tables, and code blocks. Only the first MiB of a page's HTML is converted. Results
 longer than 40,000 characters are saved to a temporary file that Pi can read
 further; these files are removed when Pi exits.
 
@@ -214,6 +217,8 @@ Q4 KV reduces memory use and can reduce accuracy.
   `74b0cf1b42766e44da3cbce365a9643f84eb3d15`, locked in `flake.lock`.
 - [Prism runtime](https://github.com/PrismML-Eng/llama.cpp/releases/tag/prism-b10709-9a9394a):
   `prism-b10709-9a9394a`, built with ROCm and the MTP Hadamard fix.
+- `web_fetch` libraries: @mozilla/readability 0.6.0, linkedom 0.18.13, turndown 7.2.4,
+  and turndown-plugin-gfm 1.0.2, locked in `pi/package-lock.json`.
 - [Default MTP weights](https://huggingface.co/BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-PQ2_0-MTP-GGUF/tree/f6c0aa5b6b5179039f1ef12eb84d361d468bbc73):
   `f6c0aa5b6b5179039f1ef12eb84d361d468bbc73`.
 - [Original models and vision projector](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/tree/6ed5e12bf84b7a63069882c91dd9e9218647d17b):
@@ -254,6 +259,10 @@ nix flake check
 
 To add a variant, add its repository, revision, filename, SHA-256, label, and
 vision support to `nix/variants.json`. The server and Pi use the same registry.
+
+The `web_fetch` libraries are npm packages pinned in `pi/package.json`. After changing
+it, run `npm install --prefix pi --package-lock-only --ignore-scripts` to update
+`pi/package-lock.json`; Nix builds `node_modules` from that lock file.
 
 CI runs formatting, lint, launcher, speed-indicator, and web tool tests, and a dependency check that keeps PTQ1
 out of the default installation. It needs neither a GPU nor model downloads.

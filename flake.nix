@@ -17,6 +17,17 @@
       runtime = pkgs.callPackage ./nix/runtime.nix { };
       runtimeMtp = pkgs.callPackage ./nix/runtime-mtp.nix { };
       models = import ./nix/models.nix { inherit (pkgs) fetchurl; };
+      # npm libraries for the web_fetch extension, built from pi/package-lock.json.
+      webModules = pkgs.importNpmLock.buildNodeModules {
+        npmRoot = pkgs.lib.fileset.toSource {
+          root = ./pi;
+          fileset = pkgs.lib.fileset.unions [
+            ./pi/package.json
+            ./pi/package-lock.json
+          ];
+        };
+        nodejs = pkgs.nodejs;
+      };
       resolver =
         includePtq1:
         pkgs.replaceVarsWith {
@@ -91,6 +102,8 @@
             cp ${./nix/variants.json} $out/share/pi-bonsai2/variants.json
             cp ${./pi/speed.ts} $out/share/pi-bonsai2/speed.ts
             cp ${./pi/web.ts} $out/share/pi-bonsai2/web.ts
+            # Pi resolves extension imports from node_modules beside the extension files.
+            ln -s ${webModules}/node_modules $out/share/pi-bonsai2/node_modules
             substitute ${./scripts/pi-bonsai2.py} $out/bin/pi-bonsai2 \
               --replace-fail '@python@' '${pkgs.python3}/bin/python3' \
               --replace-fail '@server@' '${backend}/bin/bonsai2-server' \
@@ -180,6 +193,7 @@
           cp -r ${./pi} pi
           cp -r ${./tests} tests
           chmod u+w pi
+          ln -s ${webModules}/node_modules pi/node_modules
           cp ${./nix/variants.json} pi/variants.json
           node --experimental-strip-types --test tests/*.test.ts
           touch $out
