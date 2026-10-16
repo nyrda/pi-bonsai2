@@ -11,12 +11,11 @@
 }:
 stdenv.mkDerivation {
   pname = "llama-cpp-prism-rocm-mtp";
-  version = "prism-b10709-9a9394a-mtp";
+  version = "prism-b10777-e3de715";
   src = fetchurl {
-    url = "https://github.com/PrismML-Eng/llama.cpp/archive/9a9394a895b96003ca842a6041cb28ac49a108f7.tar.gz";
-    hash = "sha256-PtuRA+6VKsDWN+9UhJW3y9nOAcKbb51ic68zEU0pcv0=";
+    url = "https://github.com/PrismML-Eng/llama.cpp/archive/e3de715222b2667c54a267441159a5729f11155e.tar.gz";
+    hash = "sha256-4Nvl/ekWoVqTzxH+ZGezIL8jtrYPynctPBNv34gP2nA=";
   };
-  patches = [ ./patches/mtp-hadamard.patch ];
   nativeBuildInputs = [
     cmake
     ninja
@@ -37,8 +36,8 @@ stdenv.mkDerivation {
     "-DLLAMA_BUILD_EXAMPLES=OFF"
     "-DLLAMA_BUILD_SERVER=ON"
     "-DLLAMA_BUILD_TOOLS=ON"
-    "-DLLAMA_BUILD_NUMBER=10709"
-    "-DLLAMA_BUILD_COMMIT=9a9394a-mtp"
+    "-DLLAMA_BUILD_NUMBER=10777"
+    "-DLLAMA_BUILD_COMMIT=e3de715"
   ];
   # Keep compiler memory use bounded alongside a loaded model.
   enableParallelBuilding = true;

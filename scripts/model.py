@@ -1,5 +1,5 @@
 #!@python@
-"""Resolve pinned optional weights through Nix, keeping a user GC root."""
+"""Resolve pinned optional weights or projectors through Nix, keeping a user GC root."""
 
 import json
 import os
@@ -11,21 +11,15 @@ REGISTRY = json.loads(Path("@registry@").read_text())
 PRELOADED = json.loads("""@preloaded@""")
 
 
-def main():
-    variant = sys.argv[1]
-    if variant not in REGISTRY:
-        sys.exit("Unknown BONSAI_VARIANT: " + variant)
-    if variant in PRELOADED:
-        print(PRELOADED[variant])
-        return
-    entry = REGISTRY[variant]
+def resolve(entry, label):
+    if entry["sha256"] in PRELOADED:
+        return PRELOADED[entry["sha256"]]
     root = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
     root = root / "pi-bonsai2/models" / entry["sha256"]
     if root.exists():
-        print(root.resolve())
-        return
+        return root.resolve()
     root.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Downloading {entry['label']} into the Nix store…", file=sys.stderr)
+    print(f"Downloading {label} into the Nix store…", file=sys.stderr)
     url = f"https://huggingface.co/{entry['repo']}/resolve/{entry['revision']}/{entry['filename']}"
     result = subprocess.run(
         [
@@ -51,7 +45,18 @@ def main():
         check=True,
         stdout=subprocess.DEVNULL,
     )
-    print(path)
+    return path
+
+
+def main():
+    *flags, variant = sys.argv[1:]
+    if variant not in REGISTRY:
+        sys.exit("Unknown BONSAI_VARIANT: " + variant)
+    entry = REGISTRY[variant]
+    if flags == ["--mmproj"]:
+        print(resolve(entry["mmproj"], entry["label"] + " vision projector"))
+    else:
+        print(resolve(entry, entry["label"]))
 
 
 if __name__ == "__main__":

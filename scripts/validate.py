@@ -59,7 +59,7 @@ def validate(args, variant, work):
         BONSAI_CTX=str(args.context),
         BONSAI_AGENT_DIR=str(work / "agent"),
     )
-    vision = args.registry[variant]["vision"] and env.get("BONSAI_VISION", "1") != "0"
+    vision = "mmproj" in args.registry[variant] and env.get("BONSAI_VISION", "1") != "0"
     base = f"http://127.0.0.1:{port}"
     env["BONSAI_BASE_URL"] = base + "/v1"
     logfile = work / f"{variant}.log"

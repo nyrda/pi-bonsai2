@@ -9,7 +9,11 @@ export default function (pi: ExtensionAPI) {
   const withTimings = generationSpeed(pi);
   webTools(pi);
   const variant = process.env.BONSAI_VARIANT || "abliterated-mtp";
-  const registry: Record<string, { label: string; vision: boolean; runtime?: string }> = JSON.parse(
+  type Sampling = Record<string, number>;
+  const registry: Record<string, {
+    label: string; mmproj?: object; runtime?: string;
+    sampling?: { thinking?: Sampling; nonThinking?: Sampling };
+  }> = JSON.parse(
     readFileSync(new URL("./variants.json", import.meta.url), "utf8"),
   );
   const available = Object.entries(registry).filter(([id]) =>
@@ -109,7 +113,7 @@ export default function (pi: ExtensionAPI) {
       name: entry.label,
       reasoning: true,
       thinkingLevelMap: { off: "none", minimal: null, low: null, medium: "medium", high: "high", xhigh: "xhigh", max: null },
-      input: process.env.BONSAI_VISION === "0" || !entry.vision ? ["text"] : ["text", "image"],
+      input: process.env.BONSAI_VISION === "0" || !entry.mmproj ? ["text"] : ["text", "image"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
       maxTokens: Math.min(8192, Math.floor(contextWindow / 2)),
@@ -125,9 +129,11 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("before_provider_request", async (event, ctx) => {
     if (ctx.model?.provider !== "bonsai2") return;
-    await switchVariant(ctx.model.id.replace(/^bonsai2-/, ""));
+    const selected = ctx.model.id.replace(/^bonsai2-/, "");
+    await switchVariant(selected);
     const payload = event.payload as Record<string, unknown>;
     const thinking = payload.reasoning_effort !== "none";
+    const overrides = registry[selected].sampling;
     return {
       ...payload,
       timings_per_token: true,
@@ -137,6 +143,7 @@ export default function (pi: ExtensionAPI) {
       min_p: 0,
       presence_penalty: thinking ? 0 : 1.5,
       repeat_penalty: 1.0,
+      ...(thinking ? overrides?.thinking : overrides?.nonThinking),
     };
   });
 }
