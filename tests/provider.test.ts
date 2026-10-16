@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 
 // Stub inference transport; execute the real provider and speed extension.
 registerHooks({
@@ -64,7 +65,8 @@ test("provider switches models, applies sampling, and recovers from control erro
     delete process.env.BONSAI_BASE_URL;
     delete process.env.BONSAI_VISION;
     const h = setup();
-    assert.equal(h.config.models.length, 4);
+    const registry = JSON.parse(readFileSync(new URL("../pi/variants.json", import.meta.url), "utf8"));
+    assert.deepEqual(h.config.models.map((m: any) => m.id), Object.keys(registry).map(id => `bonsai2-${id}`));
     assert.deepEqual(h.config.models[0].input, ["text", "image"]);
     const before = h.events.before_provider_request.at(-1)!;
     const payload = await before({ payload: { reasoning_effort: "none", messages: [] } }, h.ctx);
@@ -86,7 +88,12 @@ test("provider switches models, applies sampling, and recovers from control erro
     const thinking = await before({ payload: { reasoning_effort: "medium" } }, h.ctx);
     assert.equal(thinking.temperature, 1);
     assert.equal(thinking.top_p, 0.95);
-    assert.deepEqual(calls, ["pq2", "ptq1", "abliterated-pq2"]);
+    assert.equal(thinking.presence_penalty, 0);
+    h.ctx.model.id = "bonsai2-9b-mtp";
+    const small = await before({ payload: { reasoning_effort: "medium" } }, h.ctx);
+    assert.equal(small.presence_penalty, 1);
+    assert.equal(small.temperature, 1);
+    assert.deepEqual(calls, ["pq2", "ptq1", "abliterated-pq2", "9b-mtp"]);
   } finally {
     process.env = env;
     await new Promise<void>(resolve => server.close(() => resolve()));

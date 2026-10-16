@@ -9,10 +9,10 @@
 }:
 stdenv.mkDerivation {
   pname = "llama-cpp-prism-rocm";
-  version = "prism-b10709-9a9394a";
+  version = "prism-b10777-e3de715";
   src = fetchurl {
-    url = "https://github.com/PrismML-Eng/llama.cpp/releases/download/prism-b10709-9a9394a/llama-prism-b10709-9a9394a-bin-ubuntu-rocm-7.2-x64.tar.gz";
-    sha256 = "230f879d538bb9f794d25c908bc8c0f676774c41c3e70ea719131c86d899841d";
+    url = "https://github.com/PrismML-Eng/llama.cpp/releases/download/prism-b10777-e3de715/llama-prism-b10777-e3de715-bin-ubuntu-rocm-7.2-x64.tar.gz";
+    sha256 = "228d484650073036bab3cedfe57374d6ad4237c86562c5f5ee7c638b654caf35";
   };
   nativeBuildInputs = [
     autoPatchelfHook

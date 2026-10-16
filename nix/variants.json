@@ -2,10 +2,15 @@
   "abliterated-mtp": {
     "repo": "BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-PQ2_0-MTP-GGUF",
     "revision": "f6c0aa5b6b5179039f1ef12eb84d361d468bbc73",
-    "label": "Bonsai 2 Abliterated MTP (BoldingBuilds)",
+    "label": "Bonsai 2 27B Abliterated MTP (BoldingBuilds)",
     "filename": "Ternary-Bonsai-2-27B-Abliterated-PQ2_0-MTP.gguf",
     "sha256": "7aa43b9a42f5bebc170d54f45657a7ccad841dd1f5b94434b107945740b02e86",
-    "vision": true,
+    "mmproj": {
+      "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+      "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
+      "filename": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+      "sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
+    },
     "runtime": "mtp",
     "serverArgs": [
       "--spec-type",
@@ -17,25 +22,90 @@
   "pq2": {
     "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
     "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
-    "vision": true,
-    "label": "Bonsai 2 PQ2",
+    "label": "Bonsai 2 27B PQ2",
     "filename": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
-    "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1"
+    "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+    "mmproj": {
+      "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+      "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
+      "filename": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+      "sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
+    }
   },
   "ptq1": {
     "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
     "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
-    "vision": true,
-    "label": "Bonsai 2 PTQ1",
+    "label": "Bonsai 2 27B PTQ1",
     "filename": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
-    "sha256": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3"
+    "sha256": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3",
+    "mmproj": {
+      "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+      "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
+      "filename": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+      "sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
+    }
   },
   "abliterated-pq2": {
     "repo": "Hikari07jp/Ternary-Bonsai-2-27B-Abliterated-GGUF",
     "revision": "e7f6daf95ab820ef8de7d8f5e883d95d546ab02c",
-    "label": "Bonsai 2 Abliterated PQ2 (Hikari)",
+    "label": "Bonsai 2 27B Abliterated PQ2 (Hikari)",
     "filename": "Ternary-Bonsai-2-27B-Abliterated-PQ2_0.gguf",
     "sha256": "41a362f422b70a8c2dc74a3cc14447ad0ea702c440f0dbe41dc1796da7b7e342",
-    "vision": true
+    "mmproj": {
+      "repo": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+      "revision": "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
+      "filename": "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+      "sha256": "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
+    }
+  },
+  "9b-mtp": {
+    "repo": "prism-ml/Ternary-Bonsai-2-9B-gguf",
+    "revision": "5b2abb02362efbed46bbe204014b02837778b2c2",
+    "label": "Bonsai 2 9B MTP",
+    "filename": "Ternary-Bonsai-2-9B-PQ2_0-MTP-Q8_0.gguf",
+    "sha256": "c79fcdfaf6b7bf47089b50dadcfd11f9ce7d3e96adf3bbefde7912e5ef69e22b",
+    "mmproj": {
+      "repo": "prism-ml/Ternary-Bonsai-2-9B-gguf",
+      "revision": "5b2abb02362efbed46bbe204014b02837778b2c2",
+      "filename": "Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf",
+      "sha256": "e0cb6f6988cea323ef798cd77d019bbb819af75582f034eaab0e7232314953db"
+    },
+    "runtime": "mtp",
+    "serverArgs": [
+      "--spec-type",
+      "draft-mtp",
+      "--spec-draft-n-max",
+      "2"
+    ],
+    "sampling": {
+      "thinking": {
+        "presence_penalty": 1.0
+      }
+    }
+  },
+  "4b-mtp": {
+    "repo": "prism-ml/Ternary-Bonsai-2-4B-gguf",
+    "revision": "8d6557168168f91ea6697a4a49ed2ef622b53adb",
+    "label": "Bonsai 2 4B MTP",
+    "filename": "Ternary-Bonsai-2-4B-PQ2_0-MTP-Q8_0.gguf",
+    "sha256": "0acf517de1dc3d85c403a60df6b8b07a4878ac174f368d4390be98406a4d6c0d",
+    "mmproj": {
+      "repo": "prism-ml/Ternary-Bonsai-2-4B-gguf",
+      "revision": "8d6557168168f91ea6697a4a49ed2ef622b53adb",
+      "filename": "Ternary-Bonsai-2-4B-mmproj-Q8_0.gguf",
+      "sha256": "db939d5f9b7014137810205e91d05e5f54afd72b0b3af9d33bd7d82f7906a55d"
+    },
+    "runtime": "mtp",
+    "serverArgs": [
+      "--spec-type",
+      "draft-mtp",
+      "--spec-draft-n-max",
+      "2"
+    ],
+    "sampling": {
+      "thinking": {
+        "presence_penalty": 1.0
+      }
+    }
   }
 }

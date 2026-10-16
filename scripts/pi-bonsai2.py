@@ -20,30 +20,68 @@ SERVER = "@server@"
 PI = "@pi@"
 EXTENSION = "@extension@"
 REGISTRY = json.loads(Path("@registry@").read_text())
+DEFAULT_VARIANT = "abliterated-mtp"
+GUIDE = """\
+pi-bonsai2: Pi with a local Bonsai 2 model on your AMD GPU
+
+Launcher options:
+  --list                 List the available models
+  --variant NAME         Choose a model, for example 9b-mtp (default: abliterated-mtp)
+  --ctx SIZE             Context window, for example 64k (4k to 256k, default: 128k)
+
+Inside Pi:
+  /bonsai-model [NAME]   Switch models without losing the conversation
+
+Environment:
+  BONSAI_SEARXNG_URL=URL Enable web_search through a SearXNG instance with JSON output
+  BONSAI_WEB=0           Disable web_search and web_fetch
+  BONSAI_VISION=0        Text only; saves the vision projector's GPU memory
+  BONSAI_BASE_URL=URL    Connect to a running bonsai2-server instead of starting one
+
+Settings and sessions: {agent_dir}
+
+Pi's own help follows.
+"""
+
+
+def parse_context(value):
+    """Accept a token count such as 65536 or a K suffix such as 64k."""
+    try:
+        if value.lower().endswith("k"):
+            return int(value[:-1]) * 1024
+        return int(value)
+    except ValueError:
+        return None
 
 
 def main():
     env = os.environ.copy()
     options = sys.argv[1:]
     pi_options = []
-    variant = env.get("BONSAI_VARIANT", "abliterated-mtp")
+    variant = env.get("BONSAI_VARIANT", DEFAULT_VARIANT)
     while options:
         option, *options = options
         if option == "--":
             pi_options.extend([option, *options])
             break
-        if option == "--list-variants":
+        if option in ("--list", "--list-variants"):
             for name, entry in REGISTRY.items():
-                print(f"{name:20} {entry['label']}")
+                default = "  (default)" if name == DEFAULT_VARIANT else ""
+                print(f"{name:20} {entry['label']}{default}")
             return 0
-        if option == "--variant":
+        if option in ("--variant", "--ctx"):
             if not options:
-                sys.exit("--variant requires a name")
-            variant, *options = options
-        elif option.startswith("--variant="):
-            variant = option.split("=", 1)[1]
+                sys.exit(f"{option} requires a value")
+            value, *options = options
+        elif option.startswith(("--variant=", "--ctx=")):
+            option, value = option.split("=", 1)
         else:
             pi_options.append(option)
+            continue
+        if option == "--variant":
+            variant = value
+        else:
+            env["BONSAI_CTX"] = value
     if variant not in REGISTRY:
         sys.exit("Unknown BONSAI_VARIANT: " + variant)
     env["BONSAI_VARIANT"] = variant
@@ -63,12 +101,10 @@ def main():
     env["PI_OFFLINE"] = "1"
     env["PI_SKIP_VERSION_CHECK"] = "1"
     env["PI_TELEMETRY"] = "0"
-    try:
-        context = int(env.setdefault("BONSAI_CTX", "131072"))
-        if not 4096 <= context <= 262144:
-            raise ValueError
-    except ValueError:
-        sys.exit("BONSAI_CTX must be an integer between 4096 and 262144")
+    context = parse_context(env.get("BONSAI_CTX", "131072"))
+    if context is None or not 4096 <= context <= 262144:
+        sys.exit("Context must be between 4096 (4k) and 262144 (256k) tokens")
+    env["BONSAI_CTX"] = str(context)
     settings = {
         "defaultProvider": "bonsai2",
         "defaultThinkingLevel": "medium",
@@ -128,6 +164,8 @@ def main():
     options = pi_options
     if "--" in options:
         options = options[: options.index("--")]
+    if any(a in options for a in ("--help", "-h")):
+        print(GUIDE.format(agent_dir=agent_dir), flush=True)
     if any(a in options for a in ("--help", "-h", "--version", "-v", "--list-models")):
         os.execve(PI, args, env)
     # An explicitly supplied backend remains owned by its caller.

@@ -32,8 +32,9 @@ jobs:
               data = json.load(f)
           paths = list(data.get('derivations', data))
           assert any('PQ2_0-MTP.gguf.drv' in p for p in paths), 'Missing default MTP model'
-          assert any('mmproj-Q8_0.gguf.drv' in p for p in paths), 'Missing vision projector'
+          assert any('27B-mmproj-Q8_0.gguf.drv' in p for p in paths), 'Missing vision projector'
           assert not any('PTQ1_0.gguf.drv' in p for p in paths), 'PTQ1 must remain opt-in'
           assert not any('Ternary-Bonsai-2-27B-PQ2_0.gguf.drv' in p for p in paths), 'Original PQ2 must remain opt-in'
           assert not any('Abliterated-PQ2_0.gguf.drv' in p for p in paths), 'Hikari must remain opt-in'
+          assert not any(f'Bonsai-2-{size}-' in p for p in paths for size in ('9B', '4B')), 'Smaller models must remain opt-in'
           PY

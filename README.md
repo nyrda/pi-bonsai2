@@ -88,16 +88,17 @@ ROCm installation or Python environment is needed.
 ## Switch models
 
 ```sh
-pi-bonsai2 --list-variants
-pi-bonsai2 --variant abliterated-pq2
-# Or: nix run github:nyrda/pi-bonsai2 -- --variant abliterated-pq2
+pi-bonsai2 --list
+pi-bonsai2 --variant 9b-mtp
+pi-bonsai2 --variant 9b-mtp --ctx 64k
+# Or: nix run github:nyrda/pi-bonsai2 -- --variant 9b-mtp
 ```
 
 Inside Pi, use `/bonsai-model` to choose a variant, or
 `/bonsai-model abliterated-pq2` to switch directly. Switching preserves the
 conversation and loads one model at a time.
 
-The default is abliterated, modified to reduce refusals. Multi-token prediction
+The default is the 27B model, abliterated to reduce refusals. Multi-token prediction
 drafts and verifies tokens to speed up generation. All variants support text and images.
 
 | Variant | Weights | Choose it for |
@@ -106,6 +107,28 @@ drafts and verifies tokens to speed up generation. All variants support text and
 | `pq2` | 7.21 GB, on demand | Original Prism weights without abliteration |
 | `ptq1` | 5.95 GB, on demand | Smaller download of the original model |
 | `abliterated-pq2` | 7.21 GB, on demand | Comparing Hikari's abliteration with BoldingBuilds' |
+| `9b-mtp` | 2.68 GB + 0.62 GB vision, on demand | Twice the speed and half the VRAM, leaving room for other GPU work |
+| `4b-mtp` | 1.27 GB + 0.37 GB vision, on demand | The smallest footprint; less reliable on coding tasks |
+
+`--ctx` sets the context window, as a token count or with a `k` suffix, from 4k to
+256k. It is the easiest way to reduce GPU memory use:
+
+| Context | 27B | 9B | 4B |
+| --- | --- | --- | --- |
+| 32k | | 4.4 GiB | 3.1 GiB |
+| 64k | | 5.2 GiB | 3.9 GiB |
+| 128k, default | 13.8 GiB | 6.8 GiB | 5.4 GiB |
+| 256k | | 10.0 GiB | 8.6 GiB |
+
+VRAM above the desktop baseline with the model loaded, vision enabled, MTP on,
+and a Q8 KV cache, on an RX 7900 XT. Requests add about 0.2 GiB. MTP itself uses
+0.4–0.8 GiB of this up to 128k, and about 1.4 GiB at 256k.
+
+Generation with MTP, measured as in [Performance and memory](#performance-and-memory):
+27B median 93 tok/s, 9B 209 tok/s, 4B 239 tok/s. In five Pi coding tasks
+(bug fixes across files, implementing a cache from a docstring, a topological sort)
+run twice each, plus one read-only code question, the 27B and 9B solved all 12
+attempts and the 4B solved 10.
 
 The `#pi-bonsai2-with-ptq1` package remains available to preinstall PTQ1.
 
@@ -177,7 +200,7 @@ managed servers running. Set `BONSAI_API_KEY` when connecting to an authenticate
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `BONSAI_VARIANT` | `abliterated-mtp` | Registry variant; optional weights download on first use |
-| `BONSAI_CTX` | `131072` | Context per session; use the same value for an external server and Pi |
+| `BONSAI_CTX` | `131072` | Context per session, like `--ctx`; use the same value for an external server and Pi |
 | `BONSAI_KV_TYPE` | `q8_0` | KV cache precision; `q4_0` uses less memory but is experimental |
 | `BONSAI_VISION` | `1` | Set to `0` for text-only input without loading the vision projector |
 | `BONSAI_IMAGE_MAX_TOKENS` | `1024` | Raise to `2048` or `4096` for detailed images and OCR |
@@ -215,17 +238,22 @@ Q4 KV reduces memory use and can reduce accuracy.
 - Nixpkgs: `e8be7818e19ada32105a8af937a6a473b38167ca`, locked in `flake.lock`.
 - Pi: 1.0.0 from [llm-agents.nix](https://github.com/numtide/llm-agents.nix/tree/74b0cf1b42766e44da3cbce365a9643f84eb3d15):
   `74b0cf1b42766e44da3cbce365a9643f84eb3d15`, locked in `flake.lock`.
-- [Prism runtime](https://github.com/PrismML-Eng/llama.cpp/releases/tag/prism-b10709-9a9394a):
-  `prism-b10709-9a9394a`, built with ROCm and the MTP Hadamard fix.
+- [Prism runtime](https://github.com/PrismML-Eng/llama.cpp/releases/tag/prism-b10777-e3de715):
+  `prism-b10777-e3de715`, built with ROCm.
 - `web_fetch` libraries: @mozilla/readability 0.6.0, linkedom 0.18.13, turndown 7.2.4,
   and turndown-plugin-gfm 1.0.2, locked in `pi/package-lock.json`.
 - [Default MTP weights](https://huggingface.co/BoldingBuilds/Ternary-Bonsai-2-27B-Abliterated-PQ2_0-MTP-GGUF/tree/f6c0aa5b6b5179039f1ef12eb84d361d468bbc73):
   `f6c0aa5b6b5179039f1ef12eb84d361d468bbc73`.
 - [Original models and vision projector](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/tree/6ed5e12bf84b7a63069882c91dd9e9218647d17b):
   `6ed5e12bf84b7a63069882c91dd9e9218647d17b`, with PQ2_0, PTQ1_0, and Q8_0 mmproj.
+- Smaller models, each with its own Q8_0 vision projector:
+  [9B](https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-gguf/tree/5b2abb02362efbed46bbe204014b02837778b2c2)
+  `5b2abb02362efbed46bbe204014b02837778b2c2` and
+  [4B](https://huggingface.co/prism-ml/Ternary-Bonsai-2-4B-gguf/tree/8d6557168168f91ea6697a4a49ed2ef622b53adb)
+  `8d6557168168f91ea6697a4a49ed2ef622b53adb`.
 
-PQ2_0 and PTQ1_0 are two weight packings of Bonsai 2 27B. The Prism runtime
-provides the Hadamard activation transform required by this model.
+PQ2_0 and PTQ1_0 are weight packings of the ternary Bonsai 2 models. The Prism
+runtime provides the Hadamard activation transform they require.
 
 ## Validation
 
@@ -257,15 +285,18 @@ ruff check scripts tests
 nix flake check
 ```
 
-To add a variant, add its repository, revision, filename, SHA-256, label, and
-vision support to `nix/variants.json`. The server and Pi use the same registry.
+To add a variant, add its repository, revision, filename, SHA-256, and label to
+`nix/variants.json`. Add an `mmproj` entry with the same fields, except the label,
+for image input. Optional `serverArgs` go to llama-server, and `sampling` overrides
+the request sampling for `thinking` or `nonThinking` mode. The server and Pi use the
+same registry.
 
 The `web_fetch` libraries are npm packages pinned in `pi/package.json`. After changing
 it, run `npm install --prefix pi --package-lock-only --ignore-scripts` to update
 `pi/package-lock.json`; Nix builds `node_modules` from that lock file.
 
-CI runs formatting, lint, launcher, speed-indicator, and web tool tests, and a dependency check that keeps PTQ1
-out of the default installation. It needs neither a GPU nor model downloads.
+CI runs formatting, lint, launcher, speed-indicator, and web tool tests, and a dependency check that keeps
+optional weights out of the default installation. It needs neither a GPU nor model downloads.
 Run `nix run .#validate` separately for GPU inference checks.
 
 ### Reproduce the speed comparison

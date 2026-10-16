@@ -59,7 +59,8 @@ import json, os, sys, time
 from pathlib import Path
 Path(os.environ["TEST_ROOT"], "pi-call").write_text(json.dumps({
     "args": sys.argv[1:], "agent": os.environ["PI_CODING_AGENT_DIR"],
-    "offline": os.environ["PI_OFFLINE"], "base": os.environ.get("BONSAI_BASE_URL")
+    "offline": os.environ["PI_OFFLINE"], "base": os.environ.get("BONSAI_BASE_URL"),
+    "ctx": os.environ["BONSAI_CTX"]
 }))
 if os.environ.get("TEST_SWITCH"):
     import urllib.request, urllib.error
@@ -182,16 +183,38 @@ raise SystemExit(int(os.environ.get("TEST_PI_EXIT", "0")))
         self.assert_stopped()
 
     def test_variant_cli_and_catalog(self):
-        result = self.run_launcher("--list-variants")
+        result = self.run_launcher("--list")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("abliterated-pq2", result.stdout)
+        self.assertIn("9b-mtp", result.stdout)
+        self.assertEqual(self.run_launcher("--list-variants").stdout, result.stdout)
         self.assertFalse((self.root / "agent").exists())
+        result = self.run_launcher("--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--variant NAME", result.stdout)
+        self.assertIn("BONSAI_SEARXNG_URL", result.stdout)
+        self.assertIn("--help", json.loads((self.root / "pi-call").read_text())["args"])
         result = self.run_launcher("--variant", "abliterated-pq2", "-p", "hello")
         self.assertEqual(result.returncode, 0, result.stderr)
         call = json.loads((self.root / "pi-call").read_text())
         self.assertIn("bonsai2-abliterated-pq2", call["args"])
         self.assertNotIn("--variant", call["args"])
         self.assert_stopped()
+
+    def test_context_flag(self):
+        for args, expected in ((("--ctx", "64k"), "65536"), (("--ctx=8192",), "8192")):
+            with self.subTest(args=args):
+                result = self.run_launcher(*args, "-p", "hello")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                call = json.loads((self.root / "pi-call").read_text())
+                self.assertEqual(call["ctx"], expected)
+                self.assertNotIn("--ctx", " ".join(call["args"]))
+                self.assert_stopped()
+        (self.root / "pi-call").unlink()
+        result = self.run_launcher("--ctx", "1k", "-p", "hello")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("between 4096", result.stderr)
+        self.assertFalse((self.root / "pi-call").exists())
 
     def test_switch_and_rollback(self):
         for fail in ("", "abliterated-pq2"):

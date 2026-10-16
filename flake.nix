@@ -16,6 +16,7 @@
       pi = llm-agents.packages.${system}.pi;
       runtime = pkgs.callPackage ./nix/runtime.nix { };
       runtimeMtp = pkgs.callPackage ./nix/runtime-mtp.nix { };
+      registry = builtins.fromJSON (builtins.readFile ./nix/variants.json);
       models = import ./nix/models.nix { inherit (pkgs) fetchurl; };
       # npm libraries for the web_fetch extension, built from pi/package-lock.json.
       webModules = pkgs.importNpmLock.buildNodeModules {
@@ -40,11 +41,13 @@
             nix = "${pkgs.nix}/bin/nix";
             nixStore = "${pkgs.nix}/bin/nix-store";
             registry = "${./nix/variants.json}";
+            # Keyed by hash, since several variants share the 27B vision projector.
             preloaded = builtins.toJSON (
               {
-                abliterated-mtp = "${models.abliterated-mtp}";
+                ${registry.abliterated-mtp.sha256} = "${models.abliterated-mtp}";
+                ${registry.abliterated-mtp.mmproj.sha256} = "${models.vision}";
               }
-              // pkgs.lib.optionalAttrs includePtq1 { ptq1 = "${models.ptq1}"; }
+              // pkgs.lib.optionalAttrs includePtq1 { ${registry.ptq1.sha256} = "${models.ptq1}"; }
             );
           };
         };
@@ -56,16 +59,17 @@
             export BONSAI_VARIANT="''${BONSAI_VARIANT:-abliterated-mtp}"
             mapfile -t variant_args < <(${pkgs.jq}/bin/jq -r --arg v "$BONSAI_VARIANT" '.[$v].serverArgs[]?' ${./nix/variants.json})
             model=$(${resolver includePtq1}/bin/bonsai2-model "$BONSAI_VARIANT")
-            if [[ "''${1:-}" == "--download-model" ]]; then exit 0; fi
-            alias="bonsai2-$BONSAI_VARIANT"
             vision_args=()
             case "''${BONSAI_VISION:-1}" in
-              1) if ${pkgs.python3}/bin/python3 -c 'import json,sys; sys.exit(not json.load(open(sys.argv[1]))[sys.argv[2]]["vision"])' ${./nix/variants.json} "$BONSAI_VARIANT"; then
-                   vision_args=(--mmproj ${models.vision})
+              1) if ${pkgs.jq}/bin/jq -e --arg v "$BONSAI_VARIANT" '.[$v].mmproj' ${./nix/variants.json} >/dev/null; then
+                   mmproj=$(${resolver includePtq1}/bin/bonsai2-model --mmproj "$BONSAI_VARIANT")
+                   vision_args=(--mmproj "$mmproj")
                  fi ;;
               0) ;;
               *) echo 'BONSAI_VISION must be 0 or 1' >&2; exit 2 ;;
             esac
+            if [[ "''${1:-}" == "--download-model" ]]; then exit 0; fi
+            alias="bonsai2-$BONSAI_VARIANT"
             exec ${runtimeMtp}/bin/llama-server \
               --model "$model" --alias "$alias" \
               "''${vision_args[@]}" \
@@ -138,7 +142,7 @@
           pkgs.nixfmt
         ];
       };
-      packages.${system} = {
+      packages.${system} = pkgs.lib.mapAttrs' (name: pkgs.lib.nameValuePair "model-${name}") models // {
         default = launcher;
         pi-bonsai2 = launcher;
         pi-bonsai2-with-ptq1 = launcherWithPtq1;
@@ -147,11 +151,6 @@
         llama-cpp-prism = runtimeMtp;
         llama-cpp-prism-prebuilt = runtime;
         llama-cpp-prism-mtp = runtimeMtp;
-        model-pq2 = models.pq2;
-        model-ptq1 = models.ptq1;
-        model-vision = models.vision;
-        model-abliterated-mtp = models.abliterated-mtp;
-        model-abliterated-pq2 = models.abliterated-pq2;
         bonsai2-validate = validate;
         bonsai2-validate-both = validateBoth;
       };
